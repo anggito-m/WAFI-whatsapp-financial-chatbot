@@ -1,0 +1,132 @@
+import { NextResponse } from "next/server";
+import { processIncomingText } from "@/src/lib/bot";
+import { env } from "@/src/lib/env";
+import { registerIncomingMessage } from "@/src/lib/finance";
+import { sendWhatsAppImage, sendWhatsAppMessage, verifyWebhookSignature } from "@/src/lib/whatsapp";
+import type { BotMessage } from "@/src/lib/types";
+
+export const runtime = "nodejs";
+
+interface WhatsAppWebhookPayload {
+  object?: string;
+  entry?: Array<{
+    changes?: Array<{
+      value?: {
+        contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>;
+        messages?: Array<{
+          id?: string;
+          from?: string;
+          type?: string;
+          text?: { body?: string };
+        }>;
+      };
+    }>;
+  }>;
+}
+
+async function sendWhatsAppReplies(to: string, messages: BotMessage[]): Promise<void> {
+  for (const message of messages) {
+    if (message.type === "text") {
+      await sendWhatsAppMessage(to, message.text);
+      continue;
+    }
+    await sendWhatsAppImage(to, message.image_url, message.caption);
+  }
+}
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const mode = searchParams.get("hub.mode");
+  const token = searchParams.get("hub.verify_token");
+  const challenge = searchParams.get("hub.challenge");
+
+  if (!env.WHATSAPP_VERIFY_TOKEN) {
+    return NextResponse.json(
+      { error: "WHATSAPP_VERIFY_TOKEN belum diatur di environment variables." },
+      { status: 500 }
+    );
+  }
+
+  if (mode === "subscribe" && token === env.WHATSAPP_VERIFY_TOKEN && challenge) {
+    return new Response(challenge, { status: 200 });
+  }
+
+  return NextResponse.json({ error: "Verifikasi webhook gagal." }, { status: 403 });
+}
+
+export async function POST(request: Request) {
+  try {
+    const rawBody = await request.text();
+    const signature = request.headers.get("x-hub-signature-256");
+
+    if (!verifyWebhookSignature(rawBody, signature)) {
+      return NextResponse.json({ error: "Signature webhook tidak valid." }, { status: 401 });
+    }
+
+    const payload = JSON.parse(rawBody) as WhatsAppWebhookPayload;
+    if (payload.object !== "whatsapp_business_account") {
+      return NextResponse.json({ received: true });
+    }
+
+    const entries = payload.entry ?? [];
+
+    for (const entry of entries) {
+      for (const change of entry.changes ?? []) {
+        const value = change.value;
+        if (!value?.messages?.length) {
+          continue;
+        }
+
+        const contactsByNumber = new Map<string, string>();
+        for (const contact of value.contacts ?? []) {
+          if (contact.wa_id && contact.profile?.name) {
+            contactsByNumber.set(contact.wa_id, contact.profile.name);
+          }
+        }
+
+        for (const message of value.messages) {
+          const messageId = message.id;
+          const from = message.from;
+
+          if (!messageId || !from) {
+            continue;
+          }
+
+          const isNewMessage = await registerIncomingMessage(messageId);
+          if (!isNewMessage) {
+            continue;
+          }
+
+          try {
+            if (message.type !== "text" || !message.text?.body?.trim()) {
+              await sendWhatsAppMessage(
+                from,
+                "Saat ini aku hanya bisa memproses pesan teks. Contoh: keluar 45000 untuk kopi."
+              );
+              continue;
+            }
+
+            const reply = await processIncomingText({
+              from,
+              name: contactsByNumber.get(from) ?? null,
+              body: message.text.body.trim()
+            });
+
+            await sendWhatsAppReplies(from, reply);
+          } catch (error) {
+            console.error("Failed to process message", error);
+            await sendWhatsAppMessage(
+              from,
+              "Maaf, ada error saat memproses pesanmu. Coba kirim ulang dalam beberapa detik."
+            );
+          }
+        }
+      }
+    }
+
+    return NextResponse.json({ received: true });
+  } catch (error) {
+    console.error("Webhook handler error", error);
+    return NextResponse.json({ error: "Payload webhook tidak valid." }, { status: 400 });
+  }
+}

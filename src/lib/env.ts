@@ -1,0 +1,32 @@
+function getOptional(name: string): string | undefined {
+  const value = process.env[name];
+  if (!value || value.trim().length === 0) {
+    return undefined;
+  }
+  return value.trim();
+}
+
+export function requireEnv(name: string): string {
+  const value = getOptional(name);
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+export const env = {
+  DATABASE_URL: getOptional("DATABASE_URL"),
+  GROQ_API_KEY: getOptional("GROQ_API_KEY"),
+  GROQ_BASE_URL: getOptional("GROQ_BASE_URL") ?? "https://api.groq.com/openai/v1",
+  GROQ_MODEL:
+    getOptional("GROQ_MODEL") ?? "meta-llama/llama-4-maverick-17b-128e-instruct",
+  TELEGRAM_BOT_TOKEN: getOptional("TELEGRAM_BOT_TOKEN"),
+  TELEGRAM_WEBHOOK_SECRET: getOptional("TELEGRAM_WEBHOOK_SECRET"),
+  WHATSAPP_VERIFY_TOKEN: getOptional("WHATSAPP_VERIFY_TOKEN"),
+  WHATSAPP_ACCESS_TOKEN: getOptional("WHATSAPP_ACCESS_TOKEN"),
+  WHATSAPP_PHONE_NUMBER_ID: getOptional("WHATSAPP_PHONE_NUMBER_ID"),
+  WHATSAPP_API_VERSION: getOptional("WHATSAPP_API_VERSION") ?? "v21.0",
+  WHATSAPP_APP_SECRET: getOptional("WHATSAPP_APP_SECRET"),
+  DEFAULT_CURRENCY: getOptional("DEFAULT_CURRENCY") ?? "IDR",
+  DEFAULT_TIMEZONE: getOptional("DEFAULT_TIMEZONE") ?? "Asia/Jakarta"
+};
