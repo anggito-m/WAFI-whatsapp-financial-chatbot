@@ -5,13 +5,13 @@ import {
   generateDatabaseNarration,
   generateFinancialChatReply,
   parseDatabaseCommand,
-  parseReportQuery
+  parseReportQuery,
 } from "@/src/lib/ai";
 import {
   buildExpenseByCategoryBarChart,
   buildIncomeByCategoryBarChart,
   buildIncomeExpenseTimeseriesChart,
-  buildPieIncomeExpenseChart
+  buildPieIncomeExpenseChart,
 } from "@/src/lib/charts";
 import {
   createTransaction,
@@ -26,22 +26,37 @@ import {
   getSummary,
   getTopSpendingCategories,
   listTransactions,
-  updateTransactionById
+  updateTransactionById,
 } from "@/src/lib/finance";
-import { formatCurrency, formatDateInTimezone, percentChange, toTitleCase } from "@/src/lib/format";
+import {
+  formatCurrency,
+  formatDateInTimezone,
+  percentChange,
+  toTitleCase,
+} from "@/src/lib/format";
 import type {
   BotMessage,
   ParsedDbCommand,
   ParsedReportQuery,
   TransactionRow,
   TransactionType,
-  UserRow
+  UserRow,
 } from "@/src/lib/types";
 
 interface IncomingTextInput {
   from: string;
   name?: string | null;
   body: string;
+}
+
+function isCreatorQuestion(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    /\bwho made (you|this bot)\b/.test(normalized) ||
+    /\bsiapa\b.*\b(buat|buatnya|bikin|ngembangin|mengembangkan|developer|develop|bat)\b/.test(
+      normalized,
+    )
+  );
 }
 
 function asText(text: string): BotMessage[] {
@@ -70,43 +85,62 @@ function toDateRange(
   timezone: string,
   startDate: string | null,
   endDate: string | null,
-  fallbackToMonth = true
+  fallbackToMonth = true,
 ) {
   const now = DateTime.now().setZone(timezone);
-  const parsedStart = startDate ? DateTime.fromISO(startDate, { zone: timezone }).startOf("day") : null;
-  const parsedEnd = endDate ? DateTime.fromISO(endDate, { zone: timezone }).endOf("day") : null;
+  const parsedStart = startDate
+    ? DateTime.fromISO(startDate, { zone: timezone }).startOf("day")
+    : null;
+  const parsedEnd = endDate
+    ? DateTime.fromISO(endDate, { zone: timezone }).endOf("day")
+    : null;
 
   const start =
     parsedStart?.isValid === true
       ? parsedStart
       : fallbackToMonth
-        ? now.startOf("month")
-        : now.startOf("day");
+      ? now.startOf("month")
+      : now.startOf("day");
 
   const end =
     parsedEnd?.isValid === true
       ? parsedEnd
       : fallbackToMonth
-        ? now.endOf("month")
-        : now.endOf("day");
+      ? now.endOf("month")
+      : now.endOf("day");
 
   return {
     startIso: toIsoUtc(start),
     endIsoExclusive: toIsoUtc(end.plus({ milliseconds: 1 })),
-    label: `${start.toFormat("dd LLL yyyy")} - ${end.toFormat("dd LLL yyyy")}`
+    label: `${start.toFormat("dd LLL yyyy")} - ${end.toFormat("dd LLL yyyy")}`,
   };
 }
 
-function parseMonth(monthValue: string | null, timezone: string): DateTime | null {
+function parseMonth(
+  monthValue: string | null,
+  timezone: string,
+): DateTime | null {
   if (!monthValue) {
     return null;
   }
-  const month = DateTime.fromFormat(monthValue, "yyyy-MM", { zone: timezone }).startOf("month");
+  const month = DateTime.fromFormat(monthValue, "yyyy-MM", {
+    zone: timezone,
+  }).startOf("month");
   return month.isValid ? month : null;
 }
 
-function formatTransactionLine(transaction: TransactionRow, user: UserRow): string {
-  return `#${transaction.id} | ${formatDateInTimezone(transaction.occurred_at, user.timezone)} | ${typeLabel(transaction.type)} | ${toTitleCase(transaction.category)} | ${formatCurrency(transaction.amount, user.currency_code)} | ${transaction.merchant || "-"}`;
+function formatTransactionLine(
+  transaction: TransactionRow,
+  user: UserRow,
+): string {
+  return `#${transaction.id} | ${formatDateInTimezone(
+    transaction.occurred_at,
+    user.timezone,
+  )} | ${typeLabel(transaction.type)} | ${toTitleCase(
+    transaction.category,
+  )} | ${formatCurrency(transaction.amount, user.currency_code)} | ${
+    transaction.merchant || "-"
+  }`;
 }
 
 function dbCommandHelpText(): string {
@@ -116,14 +150,23 @@ function dbCommandHelpText(): string {
     "2) hapus transaksi terakhir",
     "3) hapus transaksi id 25",
     "4) ubah transaksi id 25 jadi 50000 kategori transport",
-    "5) tampilkan transaksi pengeluaran bulan ini"
+    "5) tampilkan transaksi pengeluaran bulan ini",
   ].join("\n");
 }
 
 async function buildTodaySummary(user: UserRow): Promise<string> {
   const now = DateTime.now().setZone(user.timezone);
-  const range = toDateRange(user.timezone, now.toISODate(), now.toISODate(), false);
-  const summary = await getSummary(user.id, range.startIso, range.endIsoExclusive);
+  const range = toDateRange(
+    user.timezone,
+    now.toISODate(),
+    now.toISODate(),
+    false,
+  );
+  const summary = await getSummary(
+    user.id,
+    range.startIso,
+    range.endIsoExclusive,
+  );
   const spent = summary.expense + summary.debt;
   const net = summary.income - spent;
 
@@ -133,22 +176,26 @@ async function buildTodaySummary(user: UserRow): Promise<string> {
     `- Pengeluaran: ${formatCurrency(summary.expense, user.currency_code)}`,
     `- Utang: ${formatCurrency(summary.debt, user.currency_code)}`,
     `- Saldo bersih: ${formatCurrency(net, user.currency_code)}`,
-    `- Jumlah transaksi: ${summary.tx_count}`
+    `- Jumlah transaksi: ${summary.tx_count}`,
   ].join("\n");
 }
 
 async function buildRangeSummary(
   user: UserRow,
   startDate: string | null,
-  endDate: string | null
+  endDate: string | null,
 ): Promise<string> {
   const range = toDateRange(user.timezone, startDate, endDate, true);
-  const summary = await getSummary(user.id, range.startIso, range.endIsoExclusive);
+  const summary = await getSummary(
+    user.id,
+    range.startIso,
+    range.endIsoExclusive,
+  );
   const topCategories = await getTopSpendingCategories(
     user.id,
     range.startIso,
     range.endIsoExclusive,
-    3
+    3,
   );
   const spent = summary.expense + summary.debt;
   const net = summary.income - spent;
@@ -162,10 +209,16 @@ async function buildRangeSummary(
     `- Kategori terbesar: ${
       topCategories.length > 0
         ? topCategories
-            .map((item) => `${toTitleCase(item.category)} (${formatCurrency(item.total, user.currency_code)})`)
+            .map(
+              (item) =>
+                `${toTitleCase(item.category)} (${formatCurrency(
+                  item.total,
+                  user.currency_code,
+                )})`,
+            )
             .join(", ")
         : "Belum ada data pengeluaran"
-    }`
+    }`,
   ].join("\n");
 }
 
@@ -179,7 +232,7 @@ function buildItemLabel(row: TransactionRow): string {
 function buildItemizedSection(
   rows: TransactionRow[],
   currencyCode: string,
-  title: string
+  title: string,
 ): string {
   if (rows.length === 0) {
     return `${title}\n- Tidak ada data`;
@@ -195,7 +248,7 @@ function buildItemizedSection(
   }
 
   const sorted = [...aggregated.entries()].sort((a, b) =>
-    a[0].localeCompare(b[0], "id", { sensitivity: "base" })
+    a[0].localeCompare(b[0], "id", { sensitivity: "base" }),
   );
   const maxLines = 25;
   const visible = sorted.slice(0, maxLines);
@@ -204,26 +257,32 @@ function buildItemizedSection(
   const totalValue = rows.reduce((sum, row) => sum + row.amount, 0);
   const lines = visible.map(
     ([label, value]) =>
-      `- ${label}: ${formatCurrency(value.total, currencyCode)} (${value.count} trx)`
+      `- ${label}: ${formatCurrency(value.total, currencyCode)} (${
+        value.count
+      } trx)`,
   );
 
   if (hiddenCount > 0) {
     lines.push(`- ... dan ${hiddenCount} item lainnya`);
   }
 
-  return [title, ...lines, `Total: ${formatCurrency(totalValue, currencyCode)}`].join("\n");
+  return [
+    title,
+    ...lines,
+    `Total: ${formatCurrency(totalValue, currencyCode)}`,
+  ].join("\n");
 }
 
 async function buildDetailedLedger(
   user: UserRow,
   startDate: string | null,
-  endDate: string | null
+  endDate: string | null,
 ): Promise<string> {
   const range = toDateRange(user.timezone, startDate, endDate, true);
   const transactions = await listTransactions(user.id, {
     limit: 500,
     startIso: range.startIso,
-    endIsoExclusive: range.endIsoExclusive
+    endIsoExclusive: range.endIsoExclusive,
   });
 
   const incomeRows = transactions.filter((item) => item.type === "income");
@@ -233,11 +292,19 @@ async function buildDetailedLedger(
   return [
     `Rincian log transaksi (${range.label})`,
     "",
-    buildItemizedSection(incomeRows, user.currency_code, "Pemasukan (A-Z item):"),
+    buildItemizedSection(
+      incomeRows,
+      user.currency_code,
+      "Pemasukan (A-Z item):",
+    ),
     "",
-    buildItemizedSection(expenseRows, user.currency_code, "Pengeluaran (A-Z item):"),
+    buildItemizedSection(
+      expenseRows,
+      user.currency_code,
+      "Pengeluaran (A-Z item):",
+    ),
     "",
-    buildItemizedSection(debtRows, user.currency_code, "Utang (A-Z item):")
+    buildItemizedSection(debtRows, user.currency_code, "Utang (A-Z item):"),
   ].join("\n");
 }
 
@@ -245,7 +312,7 @@ async function buildCategoryReport(
   user: UserRow,
   category: string | null,
   startDate: string | null,
-  endDate: string | null
+  endDate: string | null,
 ): Promise<string> {
   if (!category) {
     return "Aku butuh kategori dulu ya. Contoh: berapa pengeluaran untuk makan bulan ini?";
@@ -256,38 +323,40 @@ async function buildCategoryReport(
     user.id,
     category.toLowerCase(),
     range.startIso,
-    range.endIsoExclusive
+    range.endIsoExclusive,
   );
 
   return [
     `Ringkasan kategori (${range.label})`,
-    `${toTitleCase(category)}: ${formatCurrency(total, user.currency_code)}`
+    `${toTitleCase(category)}: ${formatCurrency(total, user.currency_code)}`,
   ].join("\n");
 }
 
 async function buildMonthComparison(
   user: UserRow,
   monthAValue: string | null,
-  monthBValue: string | null
+  monthBValue: string | null,
 ): Promise<string> {
   const now = DateTime.now().setZone(user.timezone);
   const monthB = parseMonth(monthBValue, user.timezone) ?? now.startOf("month");
-  const monthA = parseMonth(monthAValue, user.timezone) ?? monthB.minus({ months: 1 }).startOf("month");
+  const monthA =
+    parseMonth(monthAValue, user.timezone) ??
+    monthB.minus({ months: 1 }).startOf("month");
 
   const monthARange = {
     start: toIsoUtc(monthA.startOf("month")),
-    end: toIsoUtc(monthA.endOf("month").plus({ milliseconds: 1 }))
+    end: toIsoUtc(monthA.endOf("month").plus({ milliseconds: 1 })),
   };
   const monthBRange = {
     start: toIsoUtc(monthB.startOf("month")),
-    end: toIsoUtc(monthB.endOf("month").plus({ milliseconds: 1 }))
+    end: toIsoUtc(monthB.endOf("month").plus({ milliseconds: 1 })),
   };
 
   const [summaryA, summaryB, topA, topB] = await Promise.all([
     getSummary(user.id, monthARange.start, monthARange.end),
     getSummary(user.id, monthBRange.start, monthBRange.end),
     getTopSpendingCategories(user.id, monthARange.start, monthARange.end, 2),
-    getTopSpendingCategories(user.id, monthBRange.start, monthBRange.end, 2)
+    getTopSpendingCategories(user.id, monthBRange.start, monthBRange.end, 2),
   ]);
 
   const spendingA = summaryA.expense + summaryA.debt;
@@ -295,10 +364,30 @@ async function buildMonthComparison(
 
   return [
     `${monthA.toFormat("LLLL yyyy")} vs ${monthB.toFormat("LLLL yyyy")}`,
-    `- Pengeluaran: ${formatCurrency(spendingA, user.currency_code)} vs ${formatCurrency(spendingB, user.currency_code)} (${percentChange(spendingA, spendingB)})`,
-    `- Pemasukan: ${formatCurrency(summaryA.income, user.currency_code)} vs ${formatCurrency(summaryB.income, user.currency_code)} (${percentChange(summaryA.income, summaryB.income)})`,
-    `- Top ${monthA.toFormat("LLL")}: ${topA.length ? topA.map((item) => toTitleCase(item.category)).join(", ") : "Belum ada data"}`,
-    `- Top ${monthB.toFormat("LLL")}: ${topB.length ? topB.map((item) => toTitleCase(item.category)).join(", ") : "Belum ada data"}`
+    `- Pengeluaran: ${formatCurrency(
+      spendingA,
+      user.currency_code,
+    )} vs ${formatCurrency(spendingB, user.currency_code)} (${percentChange(
+      spendingA,
+      spendingB,
+    )})`,
+    `- Pemasukan: ${formatCurrency(
+      summaryA.income,
+      user.currency_code,
+    )} vs ${formatCurrency(
+      summaryB.income,
+      user.currency_code,
+    )} (${percentChange(summaryA.income, summaryB.income)})`,
+    `- Top ${monthA.toFormat("LLL")}: ${
+      topA.length
+        ? topA.map((item) => toTitleCase(item.category)).join(", ")
+        : "Belum ada data"
+    }`,
+    `- Top ${monthB.toFormat("LLL")}: ${
+      topB.length
+        ? topB.map((item) => toTitleCase(item.category)).join(", ")
+        : "Belum ada data"
+    }`,
   ].join("\n");
 }
 
@@ -310,13 +399,13 @@ async function buildFinancialStatus(user: UserRow): Promise<string> {
   const summary = await getSummary(
     user.id,
     toIsoUtc(monthStart),
-    toIsoUtc(monthEnd.plus({ milliseconds: 1 }))
+    toIsoUtc(monthEnd.plus({ milliseconds: 1 })),
   );
   const topCategories = await getTopSpendingCategories(
     user.id,
     toIsoUtc(monthStart),
     toIsoUtc(monthEnd.plus({ milliseconds: 1 })),
-    3
+    3,
   );
 
   const spent = summary.expense + summary.debt;
@@ -326,24 +415,40 @@ async function buildFinancialStatus(user: UserRow): Promise<string> {
   return [
     `Status keuangan (${monthStart.toFormat("LLLL yyyy")})`,
     `- Pemasukan: ${formatCurrency(summary.income, user.currency_code)}`,
-    `- Total keluar (pengeluaran + utang): ${formatCurrency(spent, user.currency_code)}`,
+    `- Total keluar (pengeluaran + utang): ${formatCurrency(
+      spent,
+      user.currency_code,
+    )}`,
     `- Saldo bersih: ${formatCurrency(net, user.currency_code)}`,
-    `- Saving rate: ${savingRate === null ? "n/a" : `${savingRate.toFixed(1)}%`}`,
+    `- Saving rate: ${
+      savingRate === null ? "n/a" : `${savingRate.toFixed(1)}%`
+    }`,
     `- Kategori dominan: ${
       topCategories.length
         ? topCategories.map((item) => toTitleCase(item.category)).join(", ")
         : "Belum ada data"
-    }`
+    }`,
   ].join("\n");
 }
 
-async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery): Promise<BotMessage[]> {
-  const range = toDateRange(user.timezone, parsed.start_date, parsed.end_date, true);
+async function buildVisualizationReport(
+  user: UserRow,
+  parsed: ParsedReportQuery,
+): Promise<BotMessage[]> {
+  const range = toDateRange(
+    user.timezone,
+    parsed.start_date,
+    parsed.end_date,
+    true,
+  );
   const chartType = parsed.chart_type ?? "timeseries_income_expense";
-  const startDate = DateTime.fromISO(range.startIso).setZone(user.timezone).toISODate() ?? "";
+  const startDate =
+    DateTime.fromISO(range.startIso).setZone(user.timezone).toISODate() ?? "";
   const endDate =
-    DateTime.fromISO(range.endIsoExclusive).setZone(user.timezone).minus({ days: 1 }).toISODate() ??
-    "";
+    DateTime.fromISO(range.endIsoExclusive)
+      .setZone(user.timezone)
+      .minus({ days: 1 })
+      .toISODate() ?? "";
 
   if (chartType === "bar_expense_by_category") {
     const rows = await getCategoryTotalsByType(
@@ -351,25 +456,24 @@ async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery
       range.startIso,
       range.endIsoExclusive,
       "expense",
-      15
+      15,
     );
     const chart = await buildExpenseByCategoryBarChart({
       categoryTotals: rows,
       periodLabel: range.label,
       currencyCode: user.currency_code,
-      formatCurrency
+      formatCurrency,
     });
     return [
       {
         type: "image",
         image_url: chart.imageUrl,
-        caption: chart.caption
+        caption: chart.caption,
       },
       {
         type: "text",
-        text:
-          "Kalau kamu mau, aku bisa lanjutkan dengan bar chart kategori pendapatan di periode yang sama."
-      }
+        text: "Kalau kamu mau, aku bisa lanjutkan dengan bar chart kategori pendapatan di periode yang sama.",
+      },
     ];
   }
 
@@ -379,30 +483,33 @@ async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery
       range.startIso,
       range.endIsoExclusive,
       "income",
-      15
+      15,
     );
     const chart = await buildIncomeByCategoryBarChart({
       categoryTotals: rows,
       periodLabel: range.label,
       currencyCode: user.currency_code,
-      formatCurrency
+      formatCurrency,
     });
     return [
       {
         type: "image",
         image_url: chart.imageUrl,
-        caption: chart.caption
+        caption: chart.caption,
       },
       {
         type: "text",
-        text:
-          "Kalau kamu mau, aku juga bisa kirim versi bar chart kategori pengeluaran untuk periode yang sama."
-      }
+        text: "Kalau kamu mau, aku juga bisa kirim versi bar chart kategori pengeluaran untuk periode yang sama.",
+      },
     ];
   }
 
   if (chartType === "pie_income_vs_expense") {
-    const summary = await getSummary(user.id, range.startIso, range.endIsoExclusive);
+    const summary = await getSummary(
+      user.id,
+      range.startIso,
+      range.endIsoExclusive,
+    );
     const income = summary.income;
     const expense = summary.expense + summary.debt;
     const chart = await buildPieIncomeExpenseChart({
@@ -410,19 +517,18 @@ async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery
       expense,
       periodLabel: range.label,
       currencyCode: user.currency_code,
-      formatCurrency
+      formatCurrency,
     });
     return [
       {
         type: "image",
         image_url: chart.imageUrl,
-        caption: chart.caption
+        caption: chart.caption,
       },
       {
         type: "text",
-        text:
-          "Kalau kamu mau, aku juga bisa bikinin versi tren harian (time series) untuk periode yang sama."
-      }
+        text: "Kalau kamu mau, aku juga bisa bikinin versi tren harian (time series) untuk periode yang sama.",
+      },
     ];
   }
 
@@ -430,7 +536,7 @@ async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery
     user.id,
     range.startIso,
     range.endIsoExclusive,
-    user.timezone
+    user.timezone,
   );
 
   const chart = await buildIncomeExpenseTimeseriesChart({
@@ -439,36 +545,50 @@ async function buildVisualizationReport(user: UserRow, parsed: ParsedReportQuery
     endDate,
     periodLabel: range.label,
     currencyCode: user.currency_code,
-    formatCurrency
+    formatCurrency,
   });
 
   return [
     {
       type: "image",
       image_url: chart.imageUrl,
-      caption: chart.caption
+      caption: chart.caption,
     },
     {
       type: "text",
-      text: "Kalau kamu ingin, aku bisa lanjutin dengan pie chart pendapatan vs pengeluaran juga."
-    }
+      text: "Kalau kamu ingin, aku bisa lanjutin dengan pie chart pendapatan vs pengeluaran juga.",
+    },
   ];
 }
 
-async function buildReportFromQuery(user: UserRow, parsed: ParsedReportQuery): Promise<BotMessage[]> {
+async function buildReportFromQuery(
+  user: UserRow,
+  parsed: ParsedReportQuery,
+): Promise<BotMessage[]> {
   switch (parsed.report_type) {
     case "today_summary":
       return asText(await buildTodaySummary(user));
     case "date_range_summary":
-      return asText(await buildRangeSummary(user, parsed.start_date, parsed.end_date));
+      return asText(
+        await buildRangeSummary(user, parsed.start_date, parsed.end_date),
+      );
     case "detailed_ledger":
-      return asText(await buildDetailedLedger(user, parsed.start_date, parsed.end_date));
+      return asText(
+        await buildDetailedLedger(user, parsed.start_date, parsed.end_date),
+      );
     case "category_spend":
       return asText(
-        await buildCategoryReport(user, parsed.category, parsed.start_date, parsed.end_date)
+        await buildCategoryReport(
+          user,
+          parsed.category,
+          parsed.start_date,
+          parsed.end_date,
+        ),
       );
     case "month_comparison":
-      return asText(await buildMonthComparison(user, parsed.month_a, parsed.month_b));
+      return asText(
+        await buildMonthComparison(user, parsed.month_a, parsed.month_b),
+      );
     case "visualization":
       return buildVisualizationReport(user, parsed);
     case "financial_status":
@@ -477,12 +597,18 @@ async function buildReportFromQuery(user: UserRow, parsed: ParsedReportQuery): P
   }
 }
 
-async function handleReport(user: UserRow, message: string): Promise<BotMessage[]> {
+async function handleReport(
+  user: UserRow,
+  message: string,
+): Promise<BotMessage[]> {
   const parsed = await parseReportQuery(message, user.timezone);
   return buildReportFromQuery(user, parsed);
 }
 
-async function handleTransaction(user: UserRow, message: string): Promise<string> {
+async function handleTransaction(
+  user: UserRow,
+  message: string,
+): Promise<string> {
   const parsed = await extractTransaction(message, user.timezone);
 
   if (!parsed.type || !parsed.amount || !parsed.category) {
@@ -498,7 +624,7 @@ async function handleTransaction(user: UserRow, message: string): Promise<string
     `- Kategori: ${toTitleCase(created.category)}`,
     `- Nominal: ${formatCurrency(created.amount, user.currency_code)}`,
     `- Merchant: ${created.merchant || "-"}`,
-    `- Tanggal: ${formatDateInTimezone(created.occurred_at, user.timezone)}`
+    `- Tanggal: ${formatDateInTimezone(created.occurred_at, user.timezone)}`,
   ].join("\n");
 }
 
@@ -559,7 +685,11 @@ function hasAnyUpdateField(payload: {
   );
 }
 
-async function handleDatabaseQuery(user: UserRow, message: string, parsed: ParsedDbCommand): Promise<string> {
+async function handleDatabaseQuery(
+  user: UserRow,
+  message: string,
+  parsed: ParsedDbCommand,
+): Promise<string> {
   const range =
     parsed.start_date || parsed.end_date
       ? toDateRange(user.timezone, parsed.start_date, parsed.end_date, false)
@@ -570,17 +700,21 @@ async function handleDatabaseQuery(user: UserRow, message: string, parsed: Parse
     type: parsed.filter_type,
     category: parsed.filter_category,
     startIso: range?.startIso ?? null,
-    endIsoExclusive: range?.endIsoExclusive ?? null
+    endIsoExclusive: range?.endIsoExclusive ?? null,
   });
 
   const summaryRange = range ?? toDateRange(user.timezone, null, null, true);
-  const summary = await getSummary(user.id, summaryRange.startIso, summaryRange.endIsoExclusive);
+  const summary = await getSummary(
+    user.id,
+    summaryRange.startIso,
+    summaryRange.endIsoExclusive,
+  );
   const spent = summary.expense + summary.debt;
   const topCategories = await getTopSpendingCategories(
     user.id,
     summaryRange.startIso,
     summaryRange.endIsoExclusive,
-    3
+    3,
   );
 
   const context = [
@@ -589,17 +723,25 @@ async function handleDatabaseQuery(user: UserRow, message: string, parsed: Parse
     `Pengeluaran: ${summary.expense}`,
     `Utang: ${summary.debt}`,
     `Net: ${summary.income - spent}`,
-    `Top kategori: ${topCategories.map((item) => `${item.category}:${item.total}`).join(" | ") || "none"}`,
+    `Top kategori: ${
+      topCategories
+        .map((item) => `${item.category}:${item.total}`)
+        .join(" | ") || "none"
+    }`,
     `Daftar transaksi: ${
       transactions.length
         ? transactions
             .map(
               (item) =>
-                `id=${item.id};type=${item.type};category=${item.category};amount=${item.amount};merchant=${item.merchant || "-"};date=${DateTime.fromISO(item.occurred_at).toISODate()}`
+                `id=${item.id};type=${item.type};category=${
+                  item.category
+                };amount=${item.amount};merchant=${
+                  item.merchant || "-"
+                };date=${DateTime.fromISO(item.occurred_at).toISODate()}`,
             )
             .join(" || ")
         : "none"
-    }`
+    }`,
   ].join("\n");
 
   const narration = await generateDatabaseNarration(message, context);
@@ -613,11 +755,14 @@ async function handleDatabaseQuery(user: UserRow, message: string, parsed: Parse
     "Data transaksi:",
     table,
     "",
-    "Tip: kamu bisa perintah langsung seperti `hapus transaksi id 12` atau `ubah transaksi terakhir jadi 25000 kategori transport`."
+    "Tip: kamu bisa perintah langsung seperti `hapus transaksi id 12` atau `ubah transaksi terakhir jadi 25000 kategori transport`.",
   ].join("\n");
 }
 
-async function handleDatabaseCommand(user: UserRow, message: string): Promise<string> {
+async function handleDatabaseCommand(
+  user: UserRow,
+  message: string,
+): Promise<string> {
   const parsed = await parseDatabaseCommand(message, user.timezone);
 
   if (parsed.command_type === "delete_last_transaction") {
@@ -627,7 +772,7 @@ async function handleDatabaseCommand(user: UserRow, message: string): Promise<st
     }
     return [
       "Oke, transaksi terakhir sudah dihapus.",
-      formatTransactionLine(deleted, user)
+      formatTransactionLine(deleted, user),
     ].join("\n");
   }
 
@@ -641,7 +786,7 @@ async function handleDatabaseCommand(user: UserRow, message: string): Promise<st
     }
     return [
       `Berhasil hapus transaksi #${parsed.transaction_id}.`,
-      formatTransactionLine(deleted, user)
+      formatTransactionLine(deleted, user),
     ].join("\n");
   }
 
@@ -662,7 +807,7 @@ async function handleDatabaseCommand(user: UserRow, message: string): Promise<st
     }
     return [
       `Siap, transaksi terakhir (#${updated.id}) sudah diperbarui.`,
-      formatTransactionLine(updated, user)
+      formatTransactionLine(updated, user),
     ].join("\n");
   }
 
@@ -676,13 +821,17 @@ async function handleDatabaseCommand(user: UserRow, message: string): Promise<st
       return `Aku belum lihat field yang mau diubah.\n${dbCommandHelpText()}`;
     }
 
-    const updated = await updateTransactionById(user.id, parsed.transaction_id, payload);
+    const updated = await updateTransactionById(
+      user.id,
+      parsed.transaction_id,
+      payload,
+    );
     if (!updated) {
       return `Transaksi dengan ID #${parsed.transaction_id} tidak ditemukan.`;
     }
     return [
       `Sip, transaksi #${updated.id} sudah diperbarui.`,
-      formatTransactionLine(updated, user)
+      formatTransactionLine(updated, user),
     ].join("\n");
   }
 
@@ -694,11 +843,19 @@ async function handleDatabaseCommand(user: UserRow, message: string): Promise<st
 }
 
 async function handleChat(user: UserRow, message: string): Promise<string> {
+  if (isCreatorQuestion(message)) {
+    return [
+      "Hehehe, aku bot asisten keuangan yang di bikin oleh Anggito (https://www.linkedin.com/in/anggito-muhammad-amien/) dalam suatu project iseng gabut.",
+      "Tugasku bantu catat transaksi, bikin ringkasan, dan kasih insight dari datamu.",
+      "Kalau mau, langsung kirim aja transaksi baru sekarang.",
+    ].join("\n");
+  }
+
   const now = DateTime.now().setZone(user.timezone);
   const summary = await getSummary(
     user.id,
     toIsoUtc(now.startOf("month")),
-    toIsoUtc(now.endOf("month").plus({ milliseconds: 1 }))
+    toIsoUtc(now.endOf("month").plus({ milliseconds: 1 })),
   );
   const recent = await getRecentTransactions(user.id, 5);
 
@@ -712,17 +869,21 @@ async function handleChat(user: UserRow, message: string): Promise<string> {
         ? recent
             .map(
               (item) =>
-                `${item.type}:${item.category}:${item.amount}:${DateTime.fromISO(item.occurred_at).toISODate()}`
+                `${item.type}:${item.category}:${
+                  item.amount
+                }:${DateTime.fromISO(item.occurred_at).toISODate()}`,
             )
             .join(" | ")
         : "none"
-    }`
+    }`,
   ].join("\n");
 
   return generateFinancialChatReply(message, context);
 }
 
-export async function processIncomingText(input: IncomingTextInput): Promise<BotMessage[]> {
+export async function processIncomingText(
+  input: IncomingTextInput,
+): Promise<BotMessage[]> {
   const user = await ensureUser(input.from, input.name);
   const intent = await classifyMessage(input.body);
 
