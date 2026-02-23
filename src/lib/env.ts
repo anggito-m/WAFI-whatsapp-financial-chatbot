@@ -20,6 +20,11 @@ export const env = {
   GROQ_BASE_URL: getOptional("GROQ_BASE_URL") ?? "https://api.groq.com/openai/v1",
   GROQ_MODEL:
     getOptional("GROQ_MODEL") ?? "meta-llama/llama-4-maverick-17b-128e-instruct",
+  OPENAI_API_KEY: getOptional("OPENAI_API_KEY"),
+  OPENAI_BASE_URL: getOptional("OPENAI_BASE_URL") ?? "https://api.openai.com/v1",
+  HF_TOKEN: getOptional("HF_TOKEN"),
+  HF_EMBEDDING_MODEL: getOptional("HF_EMBEDDING_MODEL") ?? "sentence-transformers/all-MiniLM-L6-v2",
+  HF_INFERENCE_URL: getOptional("HF_INFERENCE_URL"),
   TELEGRAM_BOT_TOKEN: getOptional("TELEGRAM_BOT_TOKEN"),
   TELEGRAM_WEBHOOK_SECRET: getOptional("TELEGRAM_WEBHOOK_SECRET"),
   WHATSAPP_VERIFY_TOKEN: getOptional("WHATSAPP_VERIFY_TOKEN"),
@@ -40,5 +45,5 @@ export const env = {
   AGENT_ERROR_BUDGET: Number.parseInt(getOptional("AGENT_ERROR_BUDGET") ?? "3", 10),
   AGENT_DEBUG_LOG: getOptional("AGENT_DEBUG_LOG") === "1",
   VECTOR_DIM: Number.parseInt(getOptional("VECTOR_DIM") ?? "1536", 10),
-  EMBEDDING_MODEL: getOptional("EMBEDDING_MODEL") ?? "text-embedding-3-small"
+  EMBEDDING_MODEL: getOptional("EMBEDDING_MODEL") ?? ""
 };
