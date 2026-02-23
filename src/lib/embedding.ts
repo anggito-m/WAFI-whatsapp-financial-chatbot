@@ -19,7 +19,7 @@ async function getEmbeddingFromHuggingFace(text: string): Promise<number[] | nul
   if (!env.HF_TOKEN || !env.HF_EMBEDDING_MODEL) return null;
   const url =
     env.HF_INFERENCE_URL ??
-    `https://api-inference.huggingface.co/pipeline/feature-extraction/${env.HF_EMBEDDING_MODEL}`;
+    `https://api-inference.huggingface.co/models/${env.HF_EMBEDDING_MODEL}`;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -33,7 +33,13 @@ async function getEmbeddingFromHuggingFace(text: string): Promise<number[] | nul
       throw new Error(`HF inference ${res.status}`);
     }
     const data = await res.json();
-    const vector = Array.isArray(data) && Array.isArray(data[0]) ? (data[0] as number[]) : null;
+    // models endpoint returns either array or {embeddings:[...]} depending on pipeline
+    const vector =
+      Array.isArray(data) && Array.isArray(data[0])
+        ? (data[0] as number[])
+        : Array.isArray((data as any).embeddings)
+        ? ((data as any).embeddings as number[])
+        : null;
     return Array.isArray(vector) ? vector : null;
   } catch (error: any) {
     if (!warnedOnce) {

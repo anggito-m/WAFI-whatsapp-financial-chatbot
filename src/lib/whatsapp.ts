@@ -24,6 +24,10 @@ async function sendWhatsAppPayload(payload: Record<string, unknown>): Promise<vo
 }
 
 export async function sendWhatsAppMessage(to: string, body: string): Promise<void> {
+  if (!body || !body.trim()) {
+    // avoid API 400 for empty text
+    return;
+  }
   await sendWhatsAppPayload({
     messaging_product: "whatsapp",
     to,
