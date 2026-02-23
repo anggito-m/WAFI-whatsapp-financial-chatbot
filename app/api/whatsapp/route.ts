@@ -81,12 +81,13 @@ export async function POST(request: Request) {
   try {
     const rawBody = await request.text();
     const signature = request.headers.get("x-hub-signature-256");
+    const contentLength = Number(request.headers.get("content-length") ?? "0");
 
     if (!verifyWebhookSignature(rawBody, signature)) {
       return NextResponse.json({ error: "Signature webhook tidak valid." }, { status: 401 });
     }
 
-    if (!rawBody) {
+    if (!rawBody || contentLength < 2) {
       return NextResponse.json({ error: "Payload kosong." }, { status: 400 });
     }
 

@@ -34,9 +34,11 @@ async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
 
   if (!(await fileExists(workerFile))) {
     await downloadToFile(`${base}/worker.min.js`, workerFile);
+    console.info("Downloaded worker.min.js to tmp");
   }
   if (!(await fileExists(coreFile))) {
     await downloadToFile(`${base}/tesseract-core.wasm.js`, coreFile);
+    console.info("Downloaded tesseract-core.wasm.js to tmp");
   }
 
   return { worker: workerFile, core: coreFile };
