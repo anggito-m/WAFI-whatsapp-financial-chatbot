@@ -169,6 +169,19 @@ export async function createTransaction(
   return mapTransactionRow(created[0]);
 }
 
+export async function createTransactionsBatch(
+  userId: number,
+  payloads: ParsedTransaction[],
+  sourceMessage: string
+): Promise<TransactionRow[]> {
+  const results: TransactionRow[] = [];
+  for (const p of payloads) {
+    const created = await createTransaction(userId, p, sourceMessage);
+    results.push(created);
+  }
+  return results;
+}
+
 export async function getSummary(
   userId: number,
   startIso: string,

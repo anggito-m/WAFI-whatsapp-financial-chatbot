@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import {
   classifyMessage,
   extractTransaction,
+  extractTransactions,
   generateDatabaseNarration,
   generateFinancialChatReply,
   parseDatabaseCommand,
@@ -16,6 +17,7 @@ import {
 } from "@/src/lib/charts";
 import {
   createTransaction,
+  createTransactionsBatch,
   deleteLastTransaction,
   deleteTransactionById,
   ensureUser,
@@ -187,18 +189,8 @@ function parseMonth(
   return month.isValid ? month : null;
 }
 
-function formatTransactionLine(
-  transaction: TransactionRow,
-  user: UserRow,
-): string {
-  return `#${transaction.id} | ${formatDateInTimezone(
-    transaction.occurred_at,
-    user.timezone,
-  )} | ${typeLabel(transaction.type)} | ${toTitleCase(
-    transaction.category,
-  )} | ${formatCurrency(transaction.amount, user.currency_code)} | ${
-    transaction.merchant || "-"
-  }`;
+function formatTransactionLine(transaction: TransactionRow, user: UserRow): string {
+  return `#${transaction.id} | ${formatDateInTimezone(transaction.occurred_at, user.timezone)} | ${typeLabel(transaction.type)} | ${toTitleCase(transaction.category)} | ${formatCurrency(transaction.amount, user.currency_code)} | ${transaction.merchant || "-"}`;
 }
 
 function dbCommandHelpText(): string {
@@ -667,50 +659,78 @@ async function handleTransaction(
   user: UserRow,
   message: string,
 ): Promise<string> {
-  const parsed = await extractTransaction(message, user.timezone);
+  const parsedList = await extractTransactions(message, user.timezone);
 
-  if (!parsed.type || !parsed.amount || !parsed.category) {
+  if (!parsedList.length) {
     return 'Aku belum bisa menangkap detail transaksinya. Coba format seperti: "Keluar 45000 untuk bensin di Shell".';
   }
 
-  const created = await createTransaction(user.id, parsed, message);
-  const anomalyMessages: string[] = [];
-  const lookback = Number(env.ANOMALY_LOOKBACK_DAYS ?? 60);
-
-  if (user.anomaly_opt_in !== false) {
-    const dup = await detectDuplicate(user, created);
-    if (dup) {
-      anomalyMessages.push(`⚠️ ${dup.reason}`);
-      await logAnomalyEvent({
-        userId: user.id,
-        transactionId: created.id,
-        reason: dup.reason,
-        score: dup.score,
-      });
+  // Jika hanya 1, gunakan jalur lama
+  if (parsedList.length === 1) {
+    const parsed = parsedList[0];
+    if (!parsed.type || !parsed.amount || !parsed.category) {
+      return 'Aku belum bisa menangkap detail transaksinya. Coba format seperti: "Keluar 45000 untuk bensin di Shell".';
     }
+    const created = await createTransaction(user.id, parsed, message);
+    const anomalies = await buildAnomalyMessages(user, created);
+    return [
+      "Siap, transaksinya sudah aku catat.",
+      `- ID: #${created.id}`,
+      `- Jenis: ${typeLabel(created.type)}`,
+      `- Kategori: ${toTitleCase(created.category)}`,
+      `- Nominal: ${formatCurrency(created.amount, user.currency_code)}`,
+      `- Merchant: ${created.merchant || "-"}`,
+      `- Tanggal: ${formatDateInTimezone(created.occurred_at, user.timezone)}`,
+      ...(anomalies.length ? ["", ...anomalies] : [])
+    ].join("\n");
+  }
 
-    const outlier = await detectAnomaly(user, created, lookback);
-    if (outlier) {
-      anomalyMessages.push(`⚠️ ${outlier.reason}`);
-      await logAnomalyEvent({
-        userId: user.id,
-        transactionId: created.id,
-        reason: outlier.reason,
-        score: outlier.score,
-      });
+  // Batch: alokasikan "sisanya" jika ada
+  const incomeTotal = parsedList
+    .filter((t) => t.type === "income" && t.amount)
+    .reduce((s, t) => s + (t.amount ?? 0), 0);
+  const expensesKnown = parsedList
+    .filter((t) => t.type === "expense" && t.amount)
+    .reduce((s, t) => s + (t.amount ?? 0), 0);
+  const remainderIndex = parsedList.findIndex(
+    (t) => t.is_remainder || (t.type === "expense" && t.amount === null)
+  );
+
+  if (remainderIndex >= 0) {
+    const remainder = incomeTotal - expensesKnown;
+    if (remainder <= 0) {
+      return "Total pemasukan tidak cukup untuk menutup pengeluaran. Tolong perbaiki angka atau hapus kata 'sisanya'.";
+    }
+    parsedList[remainderIndex].amount = Number(remainder.toFixed(2));
+  }
+
+  // Validasi wajib field
+  const invalid = parsedList.find((t) => !t.type || !t.category || !t.amount);
+  if (invalid) {
+    return "Ada transaksi yang belum jelas tipe/kategori/nominal. Tolong perjelas angka dan jenis transaksinya.";
+  }
+
+  const createdAll = await createTransactionsBatch(user.id, parsedList, message);
+
+  // Anomali per item
+  const lines: string[] = ["Siap, beberapa transaksi sudah dicatat:"];
+  for (const tx of createdAll) {
+    const anomalies = await buildAnomalyMessages(user, tx);
+    lines.push(formatTransactionLine(tx, user));
+    if (anomalies.length) {
+      lines.push(...anomalies);
     }
   }
 
-  return [
-    "Siap, transaksinya sudah aku catat.",
-    `- ID: #${created.id}`,
-    `- Jenis: ${typeLabel(created.type)}`,
-    `- Kategori: ${toTitleCase(created.category)}`,
-    `- Nominal: ${formatCurrency(created.amount, user.currency_code)}`,
-    `- Merchant: ${created.merchant || "-"}`,
-    `- Tanggal: ${formatDateInTimezone(created.occurred_at, user.timezone)}`,
-    ...(anomalyMessages.length ? ["", ...anomalyMessages] : []),
-  ].join("\n");
+  const totalIncome = createdAll.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const totalExpense = createdAll.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  lines.push(
+    "",
+    `Total pemasukan: ${formatCurrency(totalIncome, user.currency_code)}`,
+    `Total pengeluaran: ${formatCurrency(totalExpense, user.currency_code)}`
+  );
+
+  return lines.join("\n");
 }
 
 function buildDbUpdatePayload(parsed: ParsedDbCommand): {
@@ -985,4 +1005,21 @@ export async function processIncomingText(
     return asText(await handleRuleCommand(user, input.body));
   }
   return asText(await handleChat(user, input.body));
+}
+async function buildAnomalyMessages(user: UserRow, tx: TransactionRow): Promise<string[]> {
+  const messages: string[] = [];
+  const lookback = Number(env.ANOMALY_LOOKBACK_DAYS ?? 60);
+  if (user.anomaly_opt_in !== false) {
+    const dup = await detectDuplicate(user, tx);
+    if (dup) {
+      messages.push(`⚠️ ${dup.reason}`);
+      await logAnomalyEvent({ userId: user.id, transactionId: tx.id, reason: dup.reason, score: dup.score });
+    }
+    const outlier = await detectAnomaly(user, tx, lookback);
+    if (outlier) {
+      messages.push(`⚠️ ${outlier.reason}`);
+      await logAnomalyEvent({ userId: user.id, transactionId: tx.id, reason: outlier.reason, score: outlier.score });
+    }
+  }
+  return messages;
 }

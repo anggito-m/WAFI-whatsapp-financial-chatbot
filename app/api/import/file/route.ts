@@ -5,61 +5,17 @@ import { env } from "@/src/lib/env";
 import { insertIngestFile, insertIngestRow, mapCsvRowToTransaction, parseCsvBuffer } from "@/src/lib/ingest";
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 
 export const runtime = "nodejs";
 
 const require = createRequire(import.meta.url);
-let workerPath: string | undefined;
-let corePath: string | undefined;
-try {
-  workerPath = require.resolve("tesseract.js/src/worker-script/node/index.js");
-  corePath = require.resolve("tesseract.js-core/tesseract-core.wasm.js");
-} catch (error) {
-  console.warn("Tesseract worker/core resolve failed", error);
-}
+
+const workerPath = path.join(process.cwd(), "public", "tesseract", "worker.js");
+const corePath = path.join(process.cwd(), "public", "tesseract", "tesseract-core.wasm.js");
 
 async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
-  if (workerPath && corePath) {
-    return { worker: workerPath, core: corePath };
-  }
-
-  const base =
-    env.TESSERACT_CDN_BASE ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist";
-  const tmpDir = path.join(os.tmpdir(), "tesseract");
-  await fs.mkdir(tmpDir, { recursive: true });
-
-  const workerFile = path.join(tmpDir, "worker.min.js");
-  const coreFile = path.join(tmpDir, "tesseract-core.wasm.js");
-
-  if (!(await fileExists(workerFile))) {
-    await downloadToFile(`${base}/worker.min.js`, workerFile);
-    console.info("Downloaded worker.min.js to tmp");
-  }
-  if (!(await fileExists(coreFile))) {
-    await downloadToFile(`${base}/tesseract-core.wasm.js`, coreFile);
-    console.info("Downloaded tesseract-core.wasm.js to tmp");
-  }
-
-  return { worker: workerFile, core: coreFile };
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function downloadToFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to download ${url}: ${res.status}`);
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  await fs.writeFile(dest, buffer);
+  await Promise.all([fs.access(workerPath), fs.access(corePath)]);
+  return { worker: workerPath, core: corePath };
 }
 
 function bytesLimit(): number {

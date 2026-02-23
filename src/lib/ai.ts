@@ -760,6 +760,90 @@ Aturan:
   };
 }
 
+export async function extractTransactions(
+  message: string,
+  timezone: string
+): Promise<ParsedTransaction[]> {
+  const now = DateTime.now().setZone(timezone).toISO();
+  const result = await requestJson<{
+    transactions?: ParsedTransaction[];
+  }>(
+    `Ekstrak banyak transaksi dari satu pesan. Kembalikan JSON:
+{
+  "transactions":[
+    {"type":"expense|income|debt|null","category":"string|null","amount":number|null,"merchant":"string|null","note":"string|null","occurred_at":"ISO|null","is_remainder":boolean|null},
+    ...
+  ]
+}
+Aturan:
+- Boleh lebih dari 1 transaksi.
+- Jika ada kata "sisanya", tandai transaksi itu dengan "is_remainder":true dan biarkan amount null.
+- amount harus angka positif jika ada.
+- occurred_at boleh null jika tidak jelas.
+- category singkat lowercase.`,
+    `Timezone ${timezone}, sekarang ${now}\nPesan: ${message}`
+  );
+
+  if (result?.transactions && Array.isArray(result.transactions) && result.transactions.length) {
+    return result.transactions.map((t) => ({
+      ...t,
+      amount:
+        typeof t.amount === "number"
+          ? t.amount
+          : typeof t.amount === "string"
+            ? parseFlexibleNumber(t.amount)
+            : null
+    }));
+  }
+
+  // fallback sederhana: split dengan koma/dan
+  const normalized = message.toLowerCase();
+  const chunks = normalized.split(/,|\bdan\b/).map((c) => c.trim()).filter(Boolean);
+  const transactions: ParsedTransaction[] = [];
+  let incomeAmount: number | null = null;
+  for (const chunk of chunks) {
+    const amountMatch = chunk.match(/((?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d{1,2})?)/);
+    const amount = amountMatch ? parseFlexibleNumber(amountMatch[1]) : null;
+    const isIncome = /(terima|diberi|dapat|income|pemasukan|gaji)/i.test(chunk);
+    const isDebt = /(utang|hutang|pinjam|cicil)/i.test(chunk);
+    const isRemainder = /sisanya/.test(chunk) && !amount;
+    const type = isIncome ? "income" : isDebt ? "debt" : "expense";
+    if (isIncome && amount) incomeAmount = amount;
+    transactions.push({
+      type,
+      category: extractCategoryFromMessage(chunk) ?? (isIncome ? "pemasukan" : "lainnya"),
+      amount,
+      merchant: null,
+      note: null,
+      occurred_at: resolveRelativeDate(message, timezone),
+      is_remainder: isRemainder
+    });
+  }
+
+  if (transactions.length === 0) {
+    return [fallbackTransaction(message, timezone)];
+  }
+
+  // Jika tidak ada income terdeteksi, ambil jumlah pertama yang mengandung kata diberi/terima
+  if (!incomeAmount) {
+    const m = normalized.match(/diberi\s+((?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d{1,2})?)/);
+    incomeAmount = m ? parseFlexibleNumber(m[1]) : null;
+    if (incomeAmount) {
+      transactions.unshift({
+        type: "income",
+        category: "pemasukan",
+        amount: incomeAmount,
+        merchant: null,
+        note: null,
+        occurred_at: resolveRelativeDate(message, timezone),
+        is_remainder: false
+      });
+    }
+  }
+
+  return transactions;
+}
+
 export async function parseReportQuery(
   message: string,
   timezone: string

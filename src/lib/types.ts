@@ -9,6 +9,7 @@ export interface ParsedTransaction {
   merchant: string | null;
   note: string | null;
   occurred_at: string | null;
+  is_remainder?: boolean | null;
 }
 
 export interface ParsedRuleCommand {
