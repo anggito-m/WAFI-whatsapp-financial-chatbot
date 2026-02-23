@@ -48,7 +48,8 @@ async function forwardFileToImporter(opts: {
   requestUrl: string;
 }): Promise<Response> {
   const form = new FormData();
-  const blob = new Blob([opts.file.buffer], { type: opts.file.mime });
+  // Convert Node Buffer to a BlobPart that satisfies TypeScript in Next.js build
+  const blob = new Blob([new Uint8Array(opts.file.buffer)], { type: opts.file.mime });
   form.append("file", blob, opts.file.name);
   form.append("user_id", opts.userId);
   form.append("source", opts.source);

@@ -11,7 +11,6 @@ import type {
   TransactionType,
   UserRow
 } from "@/src/lib/types";
-import type { CategoryRule } from "@/src/lib/types";
 
 type RawTransactionRow = Omit<TransactionRow, "amount" | "occurred_at"> & {
   amount: string | number;
