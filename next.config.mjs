@@ -7,9 +7,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   reactStrictMode: true,
   turbopack: {
-    root: __dirname
+    root: __dirname,
   },
-  allowedDevOrigins: ["*"]
+  allowedDevOrigins: ["*"],
 };
 
 export default nextConfig;
