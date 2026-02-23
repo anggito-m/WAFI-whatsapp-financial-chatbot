@@ -31,5 +31,7 @@ export const env = {
   DEFAULT_TIMEZONE: getOptional("DEFAULT_TIMEZONE") ?? "Asia/Jakarta",
   OCR_LANGS: getOptional("OCR_LANGS") ?? "eng+ind",
   MAX_UPLOAD_MB: getOptional("MAX_UPLOAD_MB") ?? "2",
-  ANOMALY_LOOKBACK_DAYS: getOptional("ANOMALY_LOOKBACK_DAYS") ?? "60"
+  ANOMALY_LOOKBACK_DAYS: getOptional("ANOMALY_LOOKBACK_DAYS") ?? "60",
+  TESSERACT_CDN_BASE:
+    getOptional("TESSERACT_CDN_BASE") ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist"
 };

@@ -44,7 +44,10 @@ async function handleCsv(userId: number, file: File) {
 
 async function handleImage(userId: number, file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
+  const cdn = env.TESSERACT_CDN_BASE ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist";
   const ocr = await Tesseract.recognize(buffer, env.OCR_LANGS ?? "eng+ind", {
+    workerPath: `${cdn}/worker.min.js`,
+    corePath: `${cdn}/tesseract-core.wasm.js`,
     logger: () => {}
   });
   const ingest = await insertIngestFile({
