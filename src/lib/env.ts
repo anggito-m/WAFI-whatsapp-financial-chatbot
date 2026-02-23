@@ -33,5 +33,12 @@ export const env = {
   MAX_UPLOAD_MB: getOptional("MAX_UPLOAD_MB") ?? "2",
   ANOMALY_LOOKBACK_DAYS: getOptional("ANOMALY_LOOKBACK_DAYS") ?? "60",
   TESSERACT_CDN_BASE:
-    getOptional("TESSERACT_CDN_BASE") ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist"
+    getOptional("TESSERACT_CDN_BASE") ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist",
+  AGENT_MAX_ACTIONS: Number.parseInt(getOptional("AGENT_MAX_ACTIONS") ?? "3", 10),
+  AGENT_HISTORY_LIMIT: Number.parseInt(getOptional("AGENT_HISTORY_LIMIT") ?? "10", 10),
+  AGENT_MAX_TOKENS: Number.parseInt(getOptional("AGENT_MAX_TOKENS") ?? "8000", 10),
+  AGENT_ERROR_BUDGET: Number.parseInt(getOptional("AGENT_ERROR_BUDGET") ?? "3", 10),
+  AGENT_DEBUG_LOG: getOptional("AGENT_DEBUG_LOG") === "1",
+  VECTOR_DIM: Number.parseInt(getOptional("VECTOR_DIM") ?? "1536", 10),
+  EMBEDDING_MODEL: getOptional("EMBEDDING_MODEL") ?? "text-embedding-3-small"
 };

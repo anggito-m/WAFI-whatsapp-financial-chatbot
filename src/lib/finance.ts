@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import { query } from "@/src/lib/db";
 import { env } from "@/src/lib/env";
 import { matchRule } from "@/src/lib/rules";
+import { refreshCategoryPopularity } from "@/src/lib/popularity";
 import type {
   CategoryRule,
   DailySeriesRow,
@@ -179,6 +180,8 @@ export async function createTransactionsBatch(
     const created = await createTransaction(userId, p, sourceMessage);
     results.push(created);
   }
+  // Refresh popularity summary (best-effort)
+  refreshCategoryPopularity(userId).catch(() => {});
   return results;
 }
 

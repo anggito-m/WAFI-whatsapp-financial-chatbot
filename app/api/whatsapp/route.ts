@@ -151,7 +151,7 @@ export async function POST(request: Request) {
               } else {
                 await sendWhatsAppMessage(
                   from,
-                  `CSV diterima. ${json.rows_parsed ?? 0} baris diparsing. ID impor: ${json.ingest_id}. Aku akan siapkan pratinjau transaksi.`
+                  `CSV diterima. ${json.rows_parsed ?? 0} baris diparsing.\nID impor: ${json.ingest_id}.\nKetik "konfirmasi impor ${json.ingest_id}" untuk menyimpan atau kirim koreksi.`
                 );
               }
               continue;
@@ -175,7 +175,7 @@ export async function POST(request: Request) {
               } else {
                 await sendWhatsAppMessage(
                   from,
-                  `Foto diterima. Teks terdeteksi (preview): ${json.ocr_preview ?? ""}\nID impor: ${json.ingest_id}. Balas dengan detail jika perlu koreksi.`
+                  `Foto diterima. Teks terdeteksi (preview): ${json.ocr_preview ?? ""}\nID impor: ${json.ingest_id}.\nKetik "konfirmasi impor ${json.ingest_id}" untuk menyimpan atau kirim koreksi.`
                 );
               }
               continue;

@@ -97,3 +97,21 @@ export async function insertIngestRow(params: {
     [params.ingestFileId, params.raw, params.parsed, params.status ?? "pending", params.error ?? null]
   );
 }
+
+export async function listParsedIngestRows(ingestFileId: number): Promise<Array<{ parsed: ParsedTransaction | null; status: string; error: string | null }>> {
+  return query(
+    `
+      SELECT parsed_transaction AS parsed, status, error
+      FROM ingest_rows
+      WHERE ingest_file_id = $1
+    `,
+    [ingestFileId]
+  );
+}
+
+export async function markIngestFileStatus(ingestFileId: number, status: string, error: string | null = null): Promise<void> {
+  await query(
+    `UPDATE ingest_files SET status = $2, error = $3 WHERE id = $1`,
+    [ingestFileId, status, error]
+  );
+}

@@ -78,6 +78,28 @@ CREATE TABLE IF NOT EXISTS anomaly_events (
 CREATE INDEX IF NOT EXISTS idx_anomaly_events_user_created
   ON anomaly_events(user_id, created_at DESC);
 
+-- Memory embeddings
+CREATE TABLE IF NOT EXISTS message_embeddings (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, -- user|assistant
+  content TEXT NOT NULL,
+  embedding VECTOR(1536) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_embeddings_user_created
+  ON message_embeddings(user_id, created_at DESC);
+
+-- Popular categories/merchants (rolling 90d) - can be refreshed by job
+CREATE TABLE IF NOT EXISTS category_popularity (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category TEXT,
+  merchant TEXT,
+  total NUMERIC(14,2) NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_user_occurred_at
   ON transactions(user_id, occurred_at DESC);
 

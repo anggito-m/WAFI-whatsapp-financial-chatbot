@@ -768,19 +768,28 @@ export async function extractTransactions(
   const result = await requestJson<{
     transactions?: ParsedTransaction[];
   }>(
-    `Ekstrak banyak transaksi dari satu pesan. Kembalikan JSON:
+    `Kamu agen finansial. Baca pesan user dan putuskan sendiri mana pemasukan, pengeluaran, atau utang. Jangan bergantung pada kata kunci eksplisit dari sistem; gunakan pemahamanmu atas konteks.
+Kembalikan JSON:
 {
   "transactions":[
-    {"type":"expense|income|debt|null","category":"string|null","amount":number|null,"merchant":"string|null","note":"string|null","occurred_at":"ISO|null","is_remainder":boolean|null},
+    {
+      "type":"income|expense|debt",
+      "category":"string",
+      "amount":number|null,
+      "merchant":"string|null",
+      "note":"string|null",
+      "occurred_at":"ISO|null",
+      "is_remainder":boolean|null
+    },
     ...
   ]
 }
 Aturan:
 - Boleh lebih dari 1 transaksi.
-- Jika ada kata "sisanya", tandai transaksi itu dengan "is_remainder":true dan biarkan amount null.
-- amount harus angka positif jika ada.
-- occurred_at boleh null jika tidak jelas.
-- category singkat lowercase.`,
+- Kalau ada frasa "sisanya", buat satu transaksi pengeluaran dengan is_remainder:true dan amount:null.
+- Semua transaksi wajib punya "type" dan "category" (gunakan "lainnya" jika tidak jelas).
+- amount harus angka positif; hanya boleh null untuk is_remainder:true.
+- occurred_at boleh null jika tidak jelas.`,
     `Timezone ${timezone}, sekarang ${now}\nPesan: ${message}`
   );
 

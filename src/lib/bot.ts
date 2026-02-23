@@ -1,7 +1,6 @@
 import { DateTime } from "luxon";
 import {
   classifyMessage,
-  extractTransaction,
   extractTransactions,
   generateDatabaseNarration,
   generateFinancialChatReply,
@@ -9,11 +8,12 @@ import {
   parseReportQuery,
   parseRuleCommand
 } from "@/src/lib/ai";
+import { runAgent } from "@/src/lib/agent";
 import {
   buildExpenseByCategoryBarChart,
   buildIncomeByCategoryBarChart,
   buildIncomeExpenseTimeseriesChart,
-  buildPieIncomeExpenseChart,
+  buildPieIncomeExpenseChart
 } from "@/src/lib/charts";
 import {
   createTransaction,
@@ -33,8 +33,15 @@ import {
   logAnomalyEvent,
   updateTransactionById,
 } from "@/src/lib/finance";
+import { groundedSummary } from "@/src/lib/grounding";
+import { listParsedIngestRows, markIngestFileStatus } from "@/src/lib/ingest";
 import { detectAnomaly, detectDuplicate } from "@/src/lib/anomaly";
 import { createRule, deleteRule, listRules } from "@/src/lib/rules";
+import { redactSensitive, stripUnsafeOutput } from "@/src/lib/safety";
+import { getEmbedding } from "@/src/lib/embedding";
+import { getSimilarMessages, storeEmbedding } from "@/src/lib/memory";
+import { getTopCategoryMerchant } from "@/src/lib/popularity";
+import { summarizeMetrics, recordAgentRun } from "@/src/lib/metrics";
 import {
   formatCurrency,
   formatDateInTimezone,
@@ -47,15 +54,26 @@ import type {
   ParsedDbCommand,
   ParsedReportQuery,
   ParsedRuleCommand,
+  ParsedTransaction,
   TransactionRow,
   TransactionType,
   UserRow,
 } from "@/src/lib/types";
 
+let agentErrorStreak = 0;
+
 interface IncomingTextInput {
   from: string;
   name?: string | null;
   body: string;
+}
+
+async function handleTransactionOrFallback(user: UserRow, message: string): Promise<BotMessage[] | null> {
+  const intent = await classifyMessage(message);
+  if (intent === "transaction") {
+    return asText(await handleTransaction(user, message));
+  }
+  return null;
 }
 
 function isCreatorQuestion(message: string): boolean {
@@ -651,8 +669,7 @@ async function handleReport(
   user: UserRow,
   message: string,
 ): Promise<BotMessage[]> {
-  const parsed = await parseReportQuery(message, user.timezone);
-  return buildReportFromQuery(user, parsed);
+  return handleReportGrounded(user, message);
 }
 
 async function handleTransaction(
@@ -731,6 +748,102 @@ async function handleTransaction(
   );
 
   return lines.join("\n");
+}
+
+function sanitizeTransactions(list: ParsedTransaction[]): { list: ParsedTransaction[]; error?: string } {
+  const sanitized = list.map((t) => ({
+    type: t.type ?? "expense",
+    category: (t.category ?? "lainnya").trim().toLowerCase(),
+    amount: t.amount ?? null,
+    merchant: t.merchant ?? null,
+    note: t.note ?? null,
+    occurred_at: t.occurred_at ?? null,
+    is_remainder: t.is_remainder ?? false
+  }));
+
+  const remainderIndex = sanitized.findIndex((t) => t.is_remainder || (t.type === "expense" && t.amount === null));
+  if (remainderIndex >= 0) {
+    const incomeTotal = sanitized
+      .filter((t) => t.type === "income" && t.amount)
+      .reduce((s, t) => s + (t.amount ?? 0), 0);
+    if (!incomeTotal || incomeTotal <= 0) {
+      return { list: sanitized, error: "Aku butuh angka pemasukan untuk menghitung 'sisanya'." };
+    }
+    const expensesKnown = sanitized
+      .filter((t) => t.type === "expense" && t.amount !== null && !t.is_remainder)
+      .reduce((s, t) => s + (t.amount ?? 0), 0);
+    const remainder = incomeTotal - expensesKnown;
+    if (remainder <= 0) {
+      return { list: sanitized, error: "Total pemasukan tidak cukup untuk menutup pengeluaran. Tolong koreksi angkanya." };
+    }
+    sanitized[remainderIndex].amount = Number(remainder.toFixed(2));
+    sanitized[remainderIndex].is_remainder = true;
+  }
+
+  const invalid = sanitized.find((t) => !t.type || !t.category || t.amount === null);
+  if (invalid) {
+    return { list: sanitized, error: "Ada transaksi yang belum jelas tipe/kategori/nominal. Tolong perjelas angka dan jenis transaksinya." };
+  }
+
+  return { list: sanitized };
+}
+
+async function handleTransactionsProvided(
+  user: UserRow,
+  transactions: ParsedTransaction[],
+  sourceMessage: string
+): Promise<string> {
+  const { list, error } = sanitizeTransactions(transactions);
+  if (error) {
+    return error;
+  }
+
+  // Confidence check
+  const lowConfidence = list.find((t: any) => typeof (t as any).confidence === "number" && (t as any).confidence < 0.6);
+  if (lowConfidence) {
+    return [
+      "Aku menangkap beberapa transaksi, tapi butuh konfirmasi karena ada yang kurang yakin.",
+      ...list.map((t) => `${t.type}:${toTitleCase(t.category || "lainnya")}:${t.amount ?? "?"}`),
+      "Ketik 'ya' untuk lanjut simpan, atau kirim koreksi."
+    ].join("\n");
+  }
+
+  const createdAll = await createTransactionsBatch(user.id, list, sourceMessage);
+  // store embeddings of bot reply later outside; here we just craft text
+  const lines: string[] = ["Siap, beberapa transaksi sudah dicatat:"];
+  for (const tx of createdAll) {
+    const anomalies = await buildAnomalyMessages(user, tx);
+    lines.push(formatTransactionLine(tx, user));
+    if (anomalies.length) lines.push(...anomalies);
+  }
+  const totalIncome = createdAll.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const totalExpense = createdAll.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  lines.push(
+    "",
+    `Total pemasukan: ${formatCurrency(totalIncome, user.currency_code)}`,
+    `Total pengeluaran: ${formatCurrency(totalExpense, user.currency_code)}`
+  );
+  return lines.join("\n");
+}
+
+async function handleConfirmImport(user: UserRow, ingestId: number): Promise<string> {
+  const rows = await listParsedIngestRows(ingestId);
+  if (!rows.length) {
+    return "Ingest ID tidak ditemukan atau belum diproses.";
+  }
+
+  const parsed = rows
+    .map((r) => r.parsed)
+    .filter((p): p is ParsedTransaction => !!p && !!p.amount);
+
+  if (!parsed.length) {
+    await markIngestFileStatus(ingestId, "error", "tidak ada baris valid");
+    return "Tidak ada baris valid yang bisa disimpan.";
+  }
+
+  const result = await handleTransactionsProvided(user, parsed, `ingest:${ingestId}`);
+  await markIngestFileStatus(ingestId, "committed", null);
+  return `Hasil konfirmasi impor #${ingestId}:\n${result}`;
 }
 
 function buildDbUpdatePayload(parsed: ParsedDbCommand): {
@@ -986,25 +1099,216 @@ async function handleChat(user: UserRow, message: string): Promise<string> {
   return generateFinancialChatReply(message, context);
 }
 
+async function storeMessageEmbedding(user: UserRow, role: "user" | "assistant", content: string) {
+  const emb = await getEmbedding(content);
+  await storeEmbedding(user.id, role, content, emb);
+}
+
 export async function processIncomingText(
   input: IncomingTextInput,
 ): Promise<BotMessage[]> {
   const user = await ensureUser(input.from, input.name);
-  const intent = await classifyMessage(input.body);
+  await storeMessageEmbedding(user, "user", input.body);
 
+  // Circuit breaker: if too many consecutive errors, use lightweight mode
+  if (agentErrorStreak >= env.AGENT_ERROR_BUDGET) {
+    const fallback = await handleTransactionOrFallback(user, input.body);
+    if (fallback) {
+      const note = { type: "text", text: "Aku lagi mode ringan karena ada gangguan sebelumnya." } as BotMessage;
+      const replies = [note, ...fallback];
+      for (const r of replies) {
+        if (r.type === "text") await storeMessageEmbedding(user, "assistant", r.text);
+      }
+      agentErrorStreak = 0;
+      return replies;
+    }
+    agentErrorStreak = 0;
+  }
+  // Build lightweight context
+  const recent = await getRecentTransactions(user.id, env.AGENT_HISTORY_LIMIT ?? 10);
+  const summary = await getSummary(
+    user.id,
+    toIsoUtc(DateTime.now().setZone(user.timezone).startOf("month")),
+    toIsoUtc(DateTime.now().setZone(user.timezone).endOf("month").plus({ milliseconds: 1 }))
+  );
+  const redactedMsg = redactSensitive(input.body);
+  const userEmbedding = await getEmbedding(redactedMsg);
+  const similar = await getSimilarMessages(user.id, userEmbedding, 8);
+  const topCatMerch = await getTopCategoryMerchant(user.id, 10);
+  const context = [
+    `User: ${user.whatsapp_number}`,
+    `Timezone: ${user.timezone}`,
+    `Currency: ${user.currency_code}`,
+    `Anomaly alert: ${user.anomaly_opt_in !== false}`,
+    `Saldo bulan ini - income: ${summary.income}, expense: ${summary.expense}, debt: ${summary.debt}`,
+    `Transaksi terakhir: ${
+      recent.length
+        ? recent
+            .map(
+              (item) =>
+                `${item.type}:${item.category}:${item.amount}:${DateTime.fromISO(item.occurred_at).toISODate()}`
+            )
+            .join(" | ")
+        : "none"
+    }`,
+    `Memori mirip: ${
+      similar.length
+        ? similar.map((m) => `${m.role}:${m.content.slice(0, 60)}`).join(" | ")
+        : "none"
+    }`,
+    `Top kategori/merchant: ${
+      topCatMerch.length
+        ? topCatMerch.map((t) => `${t.category}${t.merchant ? "@" + t.merchant : ""}`).join(", ")
+        : "none"
+    }`
+  ].join("\n");
+
+  const redactedCtx = redactSensitive(context);
+  const tokenEstimate = (redactedMsg.length + redactedCtx.length) / 4; // rough
+  if (tokenEstimate > env.AGENT_MAX_TOKENS) {
+    const fb = await handleTransactionOrFallback(user, input.body);
+    if (fb) return fb;
+    return asText(await handleChat(user, input.body));
+  }
+
+  const agentStart = Date.now();
+  const agent = await runAgent({ user, message: redactedMsg, context: redactedCtx });
+  const agentDuration = Date.now() - agentStart;
+  if (agent?.actions?.length) {
+    const replies: BotMessage[] = [];
+    let actionsExecuted = 0;
+    for (const action of agent.actions) {
+      const actionStart = Date.now();
+      if (action.tool === "send_reply") {
+        replies.push({ type: "text", text: (action as any).params?.text ?? agent.final_reply ?? "" });
+      } else if (action.tool === "log_transactions") {
+        const txs = (action as any).params?.transactions;
+        if (Array.isArray(txs) && txs.length) {
+          replies.push({ type: "text", text: await handleTransactionsProvided(user, txs, input.body) });
+        } else {
+          replies.push({ type: "text", text: await handleTransaction(user, input.body) });
+        }
+    } else if (action.tool === "query_report") {
+      replies.push(...(await handleReport(user, input.body)));
+    } else if (action.tool === "db_command") {
+      replies.push({ type: "text", text: await handleDatabaseCommand(user, input.body) });
+  } else if (action.tool === "rule_command") {
+    replies.push({ type: "text", text: await handleRuleCommand(user, input.body) });
+  } else if (action.tool === "import_summary") {
+    replies.push({ type: "text", text: "Kirim file foto struk atau CSV, aku akan proses otomatis." });
+  } else if (action.tool === "confirm_import") {
+      const ingestId = (action as any).params?.ingest_id;
+      if (!ingestId) {
+        replies.push({ type: "text", text: "Ingest ID tidak ada. Kirim: konfirmasi impor <id>." });
+      } else {
+        replies.push({ type: "text", text: await handleConfirmImport(user, ingestId) });
+      }
+      } else if (action.tool === "fallback_error") {
+        replies.push({ type: "text", text: "Aku masuk mode ringan. Coba kirim lagi dengan format sederhana atau tunggu sebentar." });
+      }
+      if (env.AGENT_DEBUG_LOG) {
+        const duration = Date.now() - actionStart;
+        const payloadSize = JSON.stringify((action as any).params ?? {}).length;
+        console.log(`agent_action tool=${action.tool} duration_ms=${duration} payload_size=${payloadSize}`);
+      }
+      actionsExecuted += 1;
+    }
+    if (agent.final_reply && !replies.length) {
+      replies.push({ type: "text", text: agent.final_reply });
+    }
+    agentErrorStreak = 0;
+    replies.forEach((r) => {
+      if (r.type === "text") r.text = stripUnsafeOutput(r.text);
+    });
+    if (replies.length) {
+      if (env.AGENT_DEBUG_LOG) {
+        console.log(
+          `agent_actions tools=${agent.actions.map((a) => a.tool).join(",")} duration_ms=${agentDuration}`
+        );
+        console.log(summarizeMetrics());
+      }
+      recordAgentRun(actionsExecuted, true, agentDuration);
+      // store embedding of bot replies
+      for (const r of replies) {
+        if (r.type === "text") {
+          await storeMessageEmbedding(user, "assistant", r.text);
+        }
+      }
+      return replies;
+    }
+  }
+
+  agentErrorStreak += 1;
+  recordAgentRun(0, false, agentDuration);
+  // fallback lama
+  const intent = await classifyMessage(input.body);
+  let fallbackReplies: BotMessage[] | null = null;
   if (intent === "transaction") {
-    return asText(await handleTransaction(user, input.body));
+    fallbackReplies = asText(await handleTransaction(user, input.body));
   }
   if (intent === "report") {
-    return handleReport(user, input.body);
+    fallbackReplies = await handleReport(user, input.body);
   }
   if (intent === "db_command") {
-    return asText(await handleDatabaseCommand(user, input.body));
+    fallbackReplies = asText(await handleDatabaseCommand(user, input.body));
   }
   if (intent === "rule_command") {
-    return asText(await handleRuleCommand(user, input.body));
+    fallbackReplies = asText(await handleRuleCommand(user, input.body));
   }
-  return asText(await handleChat(user, input.body));
+  if (!fallbackReplies) {
+    fallbackReplies = asText(await handleChat(user, input.body));
+  }
+  for (const r of fallbackReplies) {
+    if (r.type === "text") {
+      await storeMessageEmbedding(user, "assistant", r.text);
+    }
+  }
+  return fallbackReplies;
+}
+
+// Grounded report helper: wrap existing report builder with numeric bullets
+async function handleReportGrounded(user: UserRow, message: string): Promise<BotMessage[]> {
+  const parsed = await parseReportQuery(message, user.timezone);
+  const base = await buildReportFromQuery(user, parsed);
+
+  // Build numeric grounding where applicable (skip visualization-only & month comparison)
+  if (parsed.report_type === "visualization" || parsed.report_type === "month_comparison") {
+    return base;
+  }
+
+  const now = DateTime.now().setZone(user.timezone);
+  let rangeLabel = `${now.startOf("month").toFormat("dd LLL yyyy")} - ${now.endOf("month").toFormat("dd LLL yyyy")}`;
+  let startIso = toIsoUtc(now.startOf("month"));
+  let endIso = toIsoUtc(now.endOf("month").plus({ milliseconds: 1 }));
+
+  if (parsed.report_type === "today_summary") {
+    rangeLabel = now.toFormat("dd LLL yyyy");
+    startIso = toIsoUtc(now.startOf("day"));
+    endIso = toIsoUtc(now.endOf("day").plus({ milliseconds: 1 }));
+  }
+
+  if (parsed.report_type === "date_range_summary" || parsed.report_type === "detailed_ledger" || parsed.report_type === "category_spend") {
+    const range = toDateRange(user.timezone, parsed.start_date, parsed.end_date, true);
+    rangeLabel = range.label;
+    startIso = range.startIso;
+    endIso = range.endIsoExclusive;
+  }
+
+  const summary = await getSummary(user.id, startIso, endIso);
+  const topCategories = await getTopSpendingCategories(user.id, startIso, endIso, 3);
+  const grounded = groundedSummary({
+    title: "Data ringkasan:",
+    summary,
+    start: rangeLabel.split(" - ")[0],
+    end: rangeLabel.includes("-") ? rangeLabel.split(" - ")[1] : rangeLabel,
+    topCategories,
+    currency: user.currency_code
+  });
+
+  return [
+    { type: "text", text: grounded },
+    ...base
+  ];
 }
 async function buildAnomalyMessages(user: UserRow, tx: TransactionRow): Promise<string[]> {
   const messages: string[] = [];

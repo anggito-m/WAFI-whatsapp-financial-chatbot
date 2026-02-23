@@ -8,7 +8,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "db:init": "node scripts/init-db.mjs",
-    "telegram:set-webhook": "node telegram/set-webhook.mjs"
+    "telegram:set-webhook": "node telegram/set-webhook.mjs",
+    "refresh:popularity": "node scripts/refresh-popularity.mjs",
+    "test:agent": "tsx scripts/agent-fixtures.ts"
   },
   "dependencies": {
     "luxon": "^3.6.1",
@@ -21,12 +23,13 @@
     "tesseract.js": "^5.1.0"
   },
   "devDependencies": {
-    "@types/papaparse": "^5.3.7",
     "@types/luxon": "^3.7.1",
     "@types/node": "^22.15.21",
+    "@types/papaparse": "^5.3.7",
     "@types/pg": "^8.15.5",
     "@types/react": "^18.3.15",
     "@types/react-dom": "^18.3.5",
+    "tsx": "^4.21.0",
     "typescript": "^5.8.3"
   }
 }
