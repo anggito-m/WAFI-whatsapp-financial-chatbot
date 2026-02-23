@@ -3,6 +3,9 @@ import Tesseract from "tesseract.js";
 import { createRequire } from "module";
 import { env } from "@/src/lib/env";
 import { insertIngestFile, insertIngestRow, mapCsvRowToTransaction, parseCsvBuffer } from "@/src/lib/ingest";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 
 export const runtime = "nodejs";
 
@@ -14,6 +17,47 @@ try {
   corePath = require.resolve("tesseract.js-core/tesseract-core.wasm.js");
 } catch (error) {
   console.warn("Tesseract worker/core resolve failed", error);
+}
+
+async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
+  if (workerPath && corePath) {
+    return { worker: workerPath, core: corePath };
+  }
+
+  const base =
+    env.TESSERACT_CDN_BASE ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist";
+  const tmpDir = path.join(os.tmpdir(), "tesseract");
+  await fs.mkdir(tmpDir, { recursive: true });
+
+  const workerFile = path.join(tmpDir, "worker.min.js");
+  const coreFile = path.join(tmpDir, "tesseract-core.wasm.js");
+
+  if (!(await fileExists(workerFile))) {
+    await downloadToFile(`${base}/worker.min.js`, workerFile);
+  }
+  if (!(await fileExists(coreFile))) {
+    await downloadToFile(`${base}/tesseract-core.wasm.js`, coreFile);
+  }
+
+  return { worker: workerFile, core: coreFile };
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function downloadToFile(url: string, dest: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to download ${url}: ${res.status}`);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  await fs.writeFile(dest, buffer);
 }
 
 function bytesLimit(): number {
@@ -55,10 +99,10 @@ async function handleCsv(userId: number, file: File) {
 
 async function handleImage(userId: number, file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
+  const paths = await ensureWorkerFiles();
   const ocr = await Tesseract.recognize(buffer, env.OCR_LANGS ?? "eng+ind", {
-    // Prefer local worker paths so Node worker_threads accept them
-    workerPath,
-    corePath,
+    workerPath: paths.worker,
+    corePath: paths.core,
     logger: () => {}
   });
   const ingest = await insertIngestFile({

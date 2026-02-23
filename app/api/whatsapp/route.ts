@@ -86,7 +86,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Signature webhook tidak valid." }, { status: 401 });
     }
 
-    const payload = JSON.parse(rawBody) as WhatsAppWebhookPayload;
+    if (!rawBody) {
+      return NextResponse.json({ error: "Payload kosong." }, { status: 400 });
+    }
+
+    let payload: WhatsAppWebhookPayload;
+    try {
+      payload = JSON.parse(rawBody) as WhatsAppWebhookPayload;
+    } catch (error) {
+      console.error("Failed to parse webhook JSON", error);
+      return NextResponse.json({ error: "Payload tidak valid." }, { status: 400 });
+    }
     if (payload.object !== "whatsapp_business_account") {
       return NextResponse.json({ received: true });
     }
