@@ -36,6 +36,11 @@ WhatsApp endpoint still exists (`/api/whatsapp`) for later activation.
   - bar chart pengeluaran per kategori
   - bar chart pendapatan per kategori
   - chart config dibuat dari kode JavaScript yang digenerate AI, lalu dieksekusi di sandbox aman
+- Rule engine: auto kategori/tipe berdasar aturan regex/merchant + belajar dari koreksi user
+- Anomali & duplikat detector (median+MAD 60 hari) dengan alert serta digest harian
+- Impor bukti transaksi:
+  - Foto/nota via OCR (tesseract.js, eng+ind)
+  - CSV sampai 500 baris, dengan pratinjau & konfirmasi
 - Data isolation per chat user id
 
 ## Project Structure
@@ -72,6 +77,9 @@ WHATSAPP_APP_SECRET=optional_for_signature_validation
 
 DEFAULT_CURRENCY=IDR
 DEFAULT_TIMEZONE=Asia/Jakarta
+OCR_LANGS=eng+ind
+MAX_UPLOAD_MB=2
+ANOMALY_LOOKBACK_DAYS=60
 ```
 
 ## Local Setup

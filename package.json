@@ -11,6 +11,8 @@
     "telegram:set-webhook": "node telegram/set-webhook.mjs"
   },
   "dependencies": {
+    "papaparse": "^5.4.1",
+    "tesseract.js": "^5.1.0",
     "luxon": "^3.6.1",
     "next": "^14.2.33",
     "openai": "^4.104.0",

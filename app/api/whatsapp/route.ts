@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { processIncomingText } from "@/src/lib/bot";
 import { env } from "@/src/lib/env";
 import { registerIncomingMessage } from "@/src/lib/finance";
-import { sendWhatsAppImage, sendWhatsAppMessage, verifyWebhookSignature } from "@/src/lib/whatsapp";
+import {
+  downloadMedia,
+  sendWhatsAppImage,
+  sendWhatsAppMessage,
+  verifyWebhookSignature
+} from "@/src/lib/whatsapp";
 import type { BotMessage } from "@/src/lib/types";
 
 export const runtime = "nodejs";
@@ -18,6 +23,8 @@ interface WhatsAppWebhookPayload {
           from?: string;
           type?: string;
           text?: { body?: string };
+          document?: { id?: string; mime_type?: string; filename?: string };
+          image?: { id?: string; mime_type?: string };
         }>;
       };
     }>;
@@ -32,6 +39,21 @@ async function sendWhatsAppReplies(to: string, messages: BotMessage[]): Promise<
     }
     await sendWhatsAppImage(to, message.image_url, message.caption);
   }
+}
+
+async function forwardFileToImporter(opts: {
+  userId: string;
+  file: { buffer: Buffer; mime: string; name: string };
+  source: "photo" | "csv";
+  requestUrl: string;
+}): Promise<Response> {
+  const form = new FormData();
+  const blob = new Blob([opts.file.buffer], { type: opts.file.mime });
+  form.append("file", blob, opts.file.name);
+  form.append("user_id", opts.userId);
+  form.append("source", opts.source);
+  const importUrl = new URL("/api/import/file", opts.requestUrl).toString();
+  return fetch(importUrl, { method: "POST", body: form });
 }
 
 export async function GET(request: Request) {
@@ -98,10 +120,59 @@ export async function POST(request: Request) {
           }
 
           try {
+            // Handle documents (CSV) and images (receipt)
+            if (message.type === "document" && message.document?.id) {
+              const media = await downloadMedia(message.document.id);
+              const resp = await forwardFileToImporter({
+                userId: from,
+                file: {
+                  buffer: media.buffer,
+                  mime: media.mime,
+                  name: message.document.filename || "upload.csv"
+                },
+                source: "csv",
+                requestUrl: request.url
+              });
+              const json = await resp.json();
+              if (!resp.ok) {
+                await sendWhatsAppMessage(from, `Impor CSV gagal: ${json.error ?? "unknown error"}`);
+              } else {
+                await sendWhatsAppMessage(
+                  from,
+                  `CSV diterima. ${json.rows_parsed ?? 0} baris diparsing. ID impor: ${json.ingest_id}. Aku akan siapkan pratinjau transaksi.`
+                );
+              }
+              continue;
+            }
+
+            if (message.type === "image" && message.image?.id) {
+              const media = await downloadMedia(message.image.id);
+              const resp = await forwardFileToImporter({
+                userId: from,
+                file: {
+                  buffer: media.buffer,
+                  mime: media.mime,
+                  name: "photo.jpg"
+                },
+                source: "photo",
+                requestUrl: request.url
+              });
+              const json = await resp.json();
+              if (!resp.ok) {
+                await sendWhatsAppMessage(from, `Impor foto gagal: ${json.error ?? "unknown error"}`);
+              } else {
+                await sendWhatsAppMessage(
+                  from,
+                  `Foto diterima. Teks terdeteksi (preview): ${json.ocr_preview ?? ""}\nID impor: ${json.ingest_id}. Balas dengan detail jika perlu koreksi.`
+                );
+              }
+              continue;
+            }
+
             if (message.type !== "text" || !message.text?.body?.trim()) {
               await sendWhatsAppMessage(
                 from,
-                "Saat ini aku hanya bisa memproses pesan teks. Contoh: keluar 45000 untuk kopi."
+                "Saat ini aku hanya bisa memproses pesan teks atau file CSV/foto struk."
               );
               continue;
             }

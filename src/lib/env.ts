@@ -28,5 +28,8 @@ export const env = {
   WHATSAPP_API_VERSION: getOptional("WHATSAPP_API_VERSION") ?? "v21.0",
   WHATSAPP_APP_SECRET: getOptional("WHATSAPP_APP_SECRET"),
   DEFAULT_CURRENCY: getOptional("DEFAULT_CURRENCY") ?? "IDR",
-  DEFAULT_TIMEZONE: getOptional("DEFAULT_TIMEZONE") ?? "Asia/Jakarta"
+  DEFAULT_TIMEZONE: getOptional("DEFAULT_TIMEZONE") ?? "Asia/Jakarta",
+  OCR_LANGS: getOptional("OCR_LANGS") ?? "eng+ind",
+  MAX_UPLOAD_MB: getOptional("MAX_UPLOAD_MB") ?? "2",
+  ANOMALY_LOOKBACK_DAYS: getOptional("ANOMALY_LOOKBACK_DAYS") ?? "60"
 };

@@ -64,3 +64,30 @@ export function verifyWebhookSignature(rawBody: string, signatureHeader: string 
   }
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(digest));
 }
+
+export async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mime: string }> {
+  const accessToken = requireEnv("WHATSAPP_ACCESS_TOKEN");
+  const apiVersion = env.WHATSAPP_API_VERSION;
+
+  // Step 1: get media URL
+  const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!metaRes.ok) {
+    throw new Error(`Failed to fetch media meta: ${metaRes.status}`);
+  }
+  const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
+  if (!meta.url) {
+    throw new Error("Media URL missing");
+  }
+
+  // Step 2: download media
+  const mediaRes = await fetch(meta.url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!mediaRes.ok) {
+    throw new Error(`Failed to download media: ${mediaRes.status}`);
+  }
+  const arrayBuffer = await mediaRes.arrayBuffer();
+  return { buffer: Buffer.from(arrayBuffer), mime: meta.mime_type || mediaRes.headers.get("content-type") || "application/octet-stream" };
+}

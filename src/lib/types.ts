@@ -1,4 +1,4 @@
-export type MessageIntent = "report" | "transaction" | "chat" | "db_command";
+export type MessageIntent = "report" | "transaction" | "chat" | "db_command" | "rule_command";
 
 export type TransactionType = "expense" | "income" | "debt";
 
@@ -9,6 +9,17 @@ export interface ParsedTransaction {
   merchant: string | null;
   note: string | null;
   occurred_at: string | null;
+}
+
+export interface ParsedRuleCommand {
+  action: "create" | "list" | "delete" | "toggle_anomaly" | "unknown";
+  rule_id: number | null;
+  pattern_regex: string | null;
+  merchant_contains: string | null;
+  category: string | null;
+  type: TransactionType | null;
+  priority: number | null;
+  anomaly_opt_in: boolean | null;
 }
 
 export type DbCommandType =
@@ -66,6 +77,7 @@ export interface UserRow {
   display_name: string | null;
   currency_code: string;
   timezone: string;
+  anomaly_opt_in?: boolean;
 }
 
 export interface TransactionRow {
@@ -83,6 +95,27 @@ export interface SummaryRow {
   expense: number;
   debt: number;
   tx_count: number;
+}
+
+export interface CategoryRule {
+  id: number;
+  user_id: number;
+  pattern_regex: string | null;
+  merchant_contains: string | null;
+  category: string;
+  type: TransactionType | null;
+  priority: number;
+  created_at: string;
+}
+
+export interface AnomalyEvent {
+  id: number;
+  user_id: number;
+  transaction_id: number;
+  reason: string;
+  score: number | null;
+  created_at: string;
+  notified_at: string | null;
 }
 
 export interface DailySeriesRow {

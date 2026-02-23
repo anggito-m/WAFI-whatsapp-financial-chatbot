@@ -6,6 +6,7 @@ import {
   generateFinancialChatReply,
   parseDatabaseCommand,
   parseReportQuery,
+  parseRuleCommand
 } from "@/src/lib/ai";
 import {
   buildExpenseByCategoryBarChart,
@@ -18,6 +19,7 @@ import {
   deleteLastTransaction,
   deleteTransactionById,
   ensureUser,
+  setAnomalyOptIn,
   getCategoryTotalsByType,
   getDailyIncomeExpenseSeries,
   getCategorySpend,
@@ -26,18 +28,23 @@ import {
   getSummary,
   getTopSpendingCategories,
   listTransactions,
+  logAnomalyEvent,
   updateTransactionById,
 } from "@/src/lib/finance";
+import { detectAnomaly, detectDuplicate } from "@/src/lib/anomaly";
+import { createRule, deleteRule, listRules } from "@/src/lib/rules";
 import {
   formatCurrency,
   formatDateInTimezone,
   percentChange,
   toTitleCase,
 } from "@/src/lib/format";
+import { env } from "@/src/lib/env";
 import type {
   BotMessage,
   ParsedDbCommand,
   ParsedReportQuery,
+  ParsedRuleCommand,
   TransactionRow,
   TransactionType,
   UserRow,
@@ -61,6 +68,57 @@ function isCreatorQuestion(message: string): boolean {
 
 function asText(text: string): BotMessage[] {
   return [{ type: "text", text }];
+}
+
+async function handleRuleCommand(user: UserRow, message: string): Promise<string> {
+  const parsed: ParsedRuleCommand = await parseRuleCommand(message);
+
+  if (parsed.action === "list") {
+    const rules = await listRules(user.id);
+    if (!rules.length) {
+      return "Belum ada aturan kategori. Contoh: atur aturan merchant indomaret = kategori belanja.";
+    }
+    const lines = rules.map(
+      (r) =>
+        `#${r.id} | prioritas ${r.priority} | ${r.merchant_contains ?? r.pattern_regex ?? "-"} => ${toTitleCase(r.category)}${r.type ? ` (${typeLabel(r.type)})` : ""}`
+    );
+    return ["Daftar aturan kategori:", ...lines].join("\n");
+  }
+
+  if (parsed.action === "delete") {
+    if (!parsed.rule_id) {
+      return "Sebutkan nomor aturan yang mau dihapus. Contoh: hapus aturan 3";
+    }
+    const ok = await deleteRule(user.id, parsed.rule_id);
+    return ok ? `Aturan #${parsed.rule_id} sudah dihapus.` : `Aturan #${parsed.rule_id} tidak ditemukan.`;
+  }
+
+  if (parsed.action === "toggle_anomaly") {
+    if (parsed.anomaly_opt_in === null) {
+      return "Ketik: nyalakan alert anomali / matikan alert anomali.";
+    }
+    await setAnomalyOptIn(user.id, parsed.anomaly_opt_in);
+    return parsed.anomaly_opt_in
+      ? "Alert anomali diaktifkan."
+      : "Alert anomali dimatikan.";
+  }
+
+  if (parsed.action === "create") {
+    if (!parsed.category) {
+      return "Butuh kategori untuk membuat aturan. Contoh: atur aturan merchant indomaret = kategori belanja.";
+    }
+    const rule = await createRule({
+      userId: user.id,
+      merchant_contains: parsed.merchant_contains,
+      pattern_regex: parsed.pattern_regex,
+      category: parsed.category,
+      type: parsed.type,
+      priority: parsed.priority ?? 50
+    });
+    return `Aturan baru dibuat (#${rule.id}) → ${rule.merchant_contains ?? rule.pattern_regex ?? "-"} => ${toTitleCase(rule.category)}${rule.type ? ` (${typeLabel(rule.type)})` : ""}`;
+  }
+
+  return "Aku belum paham perintah aturan. Contoh: atur aturan merchant indomaret = kategori belanja.";
 }
 
 function typeLabel(type: TransactionType): string {
@@ -616,6 +674,32 @@ async function handleTransaction(
   }
 
   const created = await createTransaction(user.id, parsed, message);
+  const anomalyMessages: string[] = [];
+  const lookback = Number(env.ANOMALY_LOOKBACK_DAYS ?? 60);
+
+  if (user.anomaly_opt_in !== false) {
+    const dup = await detectDuplicate(user, created);
+    if (dup) {
+      anomalyMessages.push(`⚠️ ${dup.reason}`);
+      await logAnomalyEvent({
+        userId: user.id,
+        transactionId: created.id,
+        reason: dup.reason,
+        score: dup.score,
+      });
+    }
+
+    const outlier = await detectAnomaly(user, created, lookback);
+    if (outlier) {
+      anomalyMessages.push(`⚠️ ${outlier.reason}`);
+      await logAnomalyEvent({
+        userId: user.id,
+        transactionId: created.id,
+        reason: outlier.reason,
+        score: outlier.score,
+      });
+    }
+  }
 
   return [
     "Siap, transaksinya sudah aku catat.",
@@ -625,6 +709,7 @@ async function handleTransaction(
     `- Nominal: ${formatCurrency(created.amount, user.currency_code)}`,
     `- Merchant: ${created.merchant || "-"}`,
     `- Tanggal: ${formatDateInTimezone(created.occurred_at, user.timezone)}`,
+    ...(anomalyMessages.length ? ["", ...anomalyMessages] : []),
   ].join("\n");
 }
 
@@ -895,6 +980,9 @@ export async function processIncomingText(
   }
   if (intent === "db_command") {
     return asText(await handleDatabaseCommand(user, input.body));
+  }
+  if (intent === "rule_command") {
+    return asText(await handleRuleCommand(user, input.body));
   }
   return asText(await handleChat(user, input.body));
 }

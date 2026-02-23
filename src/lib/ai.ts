@@ -7,6 +7,7 @@ import type {
   MessageIntent,
   ParsedDbCommand,
   ParsedReportQuery,
+  ParsedRuleCommand,
   ParsedTransaction
 } from "@/src/lib/types";
 
@@ -251,6 +252,10 @@ function fallbackIntent(message: string): MessageIntent {
     )
   ) {
     return "db_command";
+  }
+
+  if (/(atur aturan|rule|aturan kategori|hapus aturan|lihat aturan|toggle anomali|alert anomali|matikan anomali|nyalakan anomali)/i.test(normalized)) {
+    return "rule_command";
   }
 
   if (
@@ -591,8 +596,9 @@ export async function classifyMessage(message: string): Promise<MessageIntent> {
 1) report = minta ringkasan, perbandingan, analitik
 2) transaction = catat transaksi pemasukan/pengeluaran/utang
 3) db_command = perintah langsung ke database (lihat data mentah, hapus/edit transaksi, query data)
-4) chat = ngobrol finansial umum / saran
-Kembalikan JSON: {"intent":"report|transaction|db_command|chat"}`,
+4) rule_command = kelola aturan kategori / toggle alert anomali
+5) chat = ngobrol finansial umum / saran
+Kembalikan JSON: {"intent":"report|transaction|db_command|rule_command|chat"}`,
     `Pesan user: ${message}`
   );
 
@@ -600,12 +606,112 @@ Kembalikan JSON: {"intent":"report|transaction|db_command|chat"}`,
     result?.intent === "report" ||
     result?.intent === "transaction" ||
     result?.intent === "chat" ||
-    result?.intent === "db_command"
+    result?.intent === "db_command" ||
+    result?.intent === "rule_command"
   ) {
     return result.intent;
   }
 
   return fallback;
+}
+
+export async function parseRuleCommand(message: string): Promise<ParsedRuleCommand> {
+  const normalized = message.toLowerCase();
+
+  if (/lihat aturan|daftar aturan|rules?/i.test(normalized)) {
+    return {
+      action: "list",
+      rule_id: null,
+      pattern_regex: null,
+      merchant_contains: null,
+      category: null,
+      type: null,
+      priority: null,
+      anomaly_opt_in: null
+    };
+  }
+
+  if (/hapus aturan|delete rule/i.test(normalized)) {
+    const idMatch = normalized.match(/aturan\s*(\d+)/i);
+    return {
+      action: "delete",
+      rule_id: idMatch ? Number(idMatch[1]) : null,
+      pattern_regex: null,
+      merchant_contains: null,
+      category: null,
+      type: null,
+      priority: null,
+      anomaly_opt_in: null
+    };
+  }
+
+  if (/matikan anomali|nonaktif(an)? alert|disable anomaly|disable alert/i.test(normalized)) {
+    return {
+      action: "toggle_anomaly",
+      rule_id: null,
+      pattern_regex: null,
+      merchant_contains: null,
+      category: null,
+      type: null,
+      priority: null,
+      anomaly_opt_in: false
+    };
+  }
+
+  if (/nyalakan anomali|aktifkan alert|enable anomaly|enable alert/i.test(normalized)) {
+    return {
+      action: "toggle_anomaly",
+      rule_id: null,
+      pattern_regex: null,
+      merchant_contains: null,
+      category: null,
+      type: null,
+      priority: null,
+      anomaly_opt_in: true
+    };
+  }
+
+  if (/atur aturan|rule|aturan kategori/i.test(normalized)) {
+    const merchantMatch = normalized.match(/merchant\s+([a-z0-9 .'-]+)/i);
+    const categoryMatch =
+      normalized.match(/kategori\s+([a-z0-9 &'-]+)/i) ??
+      normalized.match(/=\s*([a-z0-9 &'-]+)/i);
+    const typeMatch =
+      normalized.match(/\b(expense|pengeluaran)\b/) ||
+      normalized.match(/\b(income|pemasukan)\b/) ||
+      normalized.match(/\b(debt|utang|hutang)\b/);
+
+    const type =
+      typeMatch && /income|pemasukan/.test(typeMatch[0])
+        ? "income"
+        : typeMatch && /debt|utang|hutang/.test(typeMatch[0])
+          ? "debt"
+          : typeMatch
+            ? "expense"
+            : null;
+
+    return {
+      action: "create",
+      rule_id: null,
+      pattern_regex: merchantMatch ? null : ".*",
+      merchant_contains: merchantMatch ? merchantMatch[1] : null,
+      category: categoryMatch ? categoryMatch[1] : null,
+      type,
+      priority: null,
+      anomaly_opt_in: null
+    };
+  }
+
+  return {
+    action: "unknown",
+    rule_id: null,
+    pattern_regex: null,
+    merchant_contains: null,
+    category: null,
+    type: null,
+    priority: null,
+    anomaly_opt_in: null
+  };
 }
 
 export async function extractTransaction(

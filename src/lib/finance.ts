@@ -1,7 +1,9 @@
 import { DateTime } from "luxon";
 import { query } from "@/src/lib/db";
 import { env } from "@/src/lib/env";
+import { matchRule } from "@/src/lib/rules";
 import type {
+  CategoryRule,
   DailySeriesRow,
   ParsedTransaction,
   SummaryRow,
@@ -9,6 +11,7 @@ import type {
   TransactionType,
   UserRow
 } from "@/src/lib/types";
+import type { CategoryRule } from "@/src/lib/types";
 
 type RawTransactionRow = Omit<TransactionRow, "amount" | "occurred_at"> & {
   amount: string | number;
@@ -63,7 +66,7 @@ export async function ensureUser(
 ): Promise<UserRow> {
   const existing = await query<UserRow>(
     `
-      SELECT id, whatsapp_number, display_name, currency_code, timezone
+      SELECT id, whatsapp_number, display_name, currency_code, timezone, anomaly_opt_in
       FROM users
       WHERE whatsapp_number = $1
       LIMIT 1
@@ -91,7 +94,7 @@ export async function ensureUser(
     `
       INSERT INTO users (whatsapp_number, display_name, currency_code, timezone)
       VALUES ($1, $2, $3, $4)
-      RETURNING id, whatsapp_number, display_name, currency_code, timezone
+      RETURNING id, whatsapp_number, display_name, currency_code, timezone, anomaly_opt_in
     `,
     [
       whatsappNumber,
@@ -125,6 +128,18 @@ export async function createTransaction(
 ): Promise<TransactionRow> {
   if (!payload.type || !payload.category || !payload.amount) {
     throw new Error("Invalid transaction payload.");
+  }
+
+  const matchedRule: CategoryRule | null = await matchRule(userId, {
+    merchant: payload.merchant ?? undefined,
+    message: sourceMessage
+  });
+
+  if (matchedRule) {
+    payload.category = matchedRule.category;
+    if (matchedRule.type) {
+      payload.type = matchedRule.type;
+    }
   }
 
   const occurredAt =
@@ -372,6 +387,28 @@ export async function deleteLastTransaction(userId: number): Promise<Transaction
   }
 
   return mapTransactionRow(rows[0]);
+}
+
+export async function setAnomalyOptIn(userId: number, optIn: boolean): Promise<void> {
+  await query(`UPDATE users SET anomaly_opt_in = $2, updated_at = NOW() WHERE id = $1`, [
+    userId,
+    optIn
+  ]);
+}
+
+export async function logAnomalyEvent(input: {
+  userId: number;
+  transactionId: number;
+  reason: string;
+  score: number | null;
+}): Promise<void> {
+  await query(
+    `
+      INSERT INTO anomaly_events (user_id, transaction_id, reason, score)
+      VALUES ($1, $2, $3, $4)
+    `,
+    [input.userId, input.transactionId, input.reason, input.score]
+  );
 }
 
 export async function updateTransactionById(
