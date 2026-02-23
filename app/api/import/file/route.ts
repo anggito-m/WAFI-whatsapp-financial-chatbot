@@ -1,9 +1,20 @@
 import { NextResponse } from "next/server";
 import Tesseract from "tesseract.js";
+import { createRequire } from "module";
 import { env } from "@/src/lib/env";
 import { insertIngestFile, insertIngestRow, mapCsvRowToTransaction, parseCsvBuffer } from "@/src/lib/ingest";
 
 export const runtime = "nodejs";
+
+const require = createRequire(import.meta.url);
+let workerPath: string | undefined;
+let corePath: string | undefined;
+try {
+  workerPath = require.resolve("tesseract.js/src/worker-script/node/index.js");
+  corePath = require.resolve("tesseract.js-core/tesseract-core.wasm.js");
+} catch (error) {
+  console.warn("Tesseract worker/core resolve failed", error);
+}
 
 function bytesLimit(): number {
   const mb = Number(env.MAX_UPLOAD_MB ?? "2");
@@ -44,10 +55,10 @@ async function handleCsv(userId: number, file: File) {
 
 async function handleImage(userId: number, file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
-  const cdn = env.TESSERACT_CDN_BASE ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist";
   const ocr = await Tesseract.recognize(buffer, env.OCR_LANGS ?? "eng+ind", {
-    workerPath: `${cdn}/worker.min.js`,
-    corePath: `${cdn}/tesseract-core.wasm.js`,
+    // Prefer local worker paths so Node worker_threads accept them
+    workerPath,
+    corePath,
     logger: () => {}
   });
   const ingest = await insertIngestFile({
