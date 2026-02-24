@@ -7,7 +7,7 @@ import path from "node:path";
 export const runtime = "nodejs";
 
 async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
-  const worker = path.join(process.cwd(), "node_modules", "tesseract.js", "src", "worker-script", "node", "index.js");
+  const worker = path.join(process.cwd(), "node_modules", "tesseract.js", "dist", "worker.min.js");
   const core = path.join(process.cwd(), "node_modules", "tesseract.js-core", "tesseract-core.wasm.js");
   return { worker, core };
 }
@@ -55,6 +55,7 @@ async function handleImage(userId: number, file: File) {
   const ocr = await Tesseract.recognize(buffer, env.OCR_LANGS ?? "eng+ind", {
     workerPath: paths.worker,
     corePath: paths.core,
+    langPath: path.dirname(paths.core),
     logger: () => {}
   });
   const ingest = await insertIngestFile({
