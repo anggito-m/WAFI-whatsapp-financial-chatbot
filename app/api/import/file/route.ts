@@ -1,21 +1,17 @@
 import { NextResponse } from "next/server";
 import Tesseract from "tesseract.js";
-import { createRequire } from "module";
 import { env } from "@/src/lib/env";
 import { insertIngestFile, insertIngestRow, mapCsvRowToTransaction, parseCsvBuffer } from "@/src/lib/ingest";
-import fs from "node:fs/promises";
-import path from "node:path";
+import { createRequire } from "module";
 
 export const runtime = "nodejs";
 
 const require = createRequire(import.meta.url);
 
-const workerPath = path.join(process.cwd(), "public", "tesseract", "worker.js");
-const corePath = path.join(process.cwd(), "public", "tesseract", "tesseract-core.wasm.js");
-
 async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
-  await Promise.all([fs.access(workerPath), fs.access(corePath)]);
-  return { worker: workerPath, core: corePath };
+  const worker = require.resolve("tesseract.js/src/worker-script/node/index.js");
+  const core = require.resolve("tesseract.js-core/tesseract-core.wasm.js");
+  return { worker, core };
 }
 
 function bytesLimit(): number {
