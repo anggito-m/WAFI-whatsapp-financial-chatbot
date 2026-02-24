@@ -32,6 +32,8 @@ import {
   listTransactions,
   logAnomalyEvent,
   updateTransactionById,
+  deleteAllTransactions,
+  deleteTransactionsByRange
 } from "@/src/lib/finance";
 import { groundedSummary } from "@/src/lib/grounding";
 import { listParsedIngestRows, markIngestFileStatus } from "@/src/lib/ingest";
@@ -84,6 +86,28 @@ function isCreatorQuestion(message: string): boolean {
       normalized,
     )
   );
+}
+
+function isHelpRequest(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(help|bantuan|contoh|perintah|cara pakai)\b/.test(normalized);
+}
+
+function buildHelpText(user: UserRow): string {
+  return [
+    "Contoh perintah yang bisa kamu pakai:",
+    "- Catat multi transaksi: \"Hari ini diberi 450000 untuk beli pempek 183000, beli rak 80500, bensin sisanya\"",
+    "- Laporan: \"laporan pengeluaran minggu ini\" / \"bandingkan pengeluaran Jan vs Feb\"",
+    "- Chart: \"buat pie chart pendapatan vs pengeluaran bulan ini\"",
+    "- DB lihat: \"tampilkan 20 transaksi terakhir\"",
+    "- DB ubah: \"ubah transaksi terakhir jadi 75000 kategori makan siang catatan nasi padang\"",
+    "- DB hapus: \"hapus transaksi 3 hari terakhir\" / \"hapus transaksi id 15\" / \"hapus semua transaksi\"",
+    "- Aturan kategori: \"atur aturan merchant indomaret = kategori belanja\"",
+    "- Anomali: \"matikan alert anomali\" / \"nyalakan alert anomali\"",
+    "- Impor: kirim CSV atau foto struk, lalu \"konfirmasi impor <id>\" untuk simpan.",
+    "",
+    `Zona waktu kamu: ${user.timezone}, mata uang: ${user.currency_code}.`
+  ].join("\n");
 }
 
 function asText(text: string): BotMessage[] {
@@ -750,7 +774,29 @@ async function handleTransaction(
   return lines.join("\n");
 }
 
-function sanitizeTransactions(list: ParsedTransaction[]): { list: ParsedTransaction[]; error?: string } {
+function detectRemainderRatio(sourceMessage: string): number | null {
+  const msg = sourceMessage.toLowerCase();
+  const fracMatch = msg.match(/(\d+)\s*\/\s*(\d+)/);
+  if (fracMatch) {
+    const num = Number.parseFloat(fracMatch[1]);
+    const den = Number.parseFloat(fracMatch[2]);
+    if (Number.isFinite(num) && Number.isFinite(den) && den > 0) {
+      const ratio = num / den;
+      if (ratio > 0 && ratio <= 1) return ratio;
+    }
+  }
+  const percMatch = msg.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (percMatch) {
+    const ratio = Number.parseFloat(percMatch[1]) / 100;
+    if (ratio > 0 && ratio <= 1) return ratio;
+  }
+  if (msg.includes("setengah") || msg.includes("separo") || msg.includes("separuh") || msg.includes("half")) {
+    return 0.5;
+  }
+  return null;
+}
+
+function sanitizeTransactions(list: ParsedTransaction[], sourceMessage: string): { list: ParsedTransaction[]; error?: string } {
   const sanitized = list.map((t) => ({
     type: t.type ?? "expense",
     category: (t.category ?? "lainnya").trim().toLowerCase(),
@@ -776,7 +822,12 @@ function sanitizeTransactions(list: ParsedTransaction[]): { list: ParsedTransact
     if (remainder <= 0) {
       return { list: sanitized, error: "Total pemasukan tidak cukup untuk menutup pengeluaran. Tolong koreksi angkanya." };
     }
-    sanitized[remainderIndex].amount = Number(remainder.toFixed(2));
+    const ratio = detectRemainderRatio(sourceMessage) ?? 1;
+    const applied = remainder * ratio;
+    if (applied <= 0) {
+      return { list: sanitized, error: "Angka 'sisanya' tidak valid. Tolong koreksi frasa sisanya." };
+    }
+    sanitized[remainderIndex].amount = Number(applied.toFixed(2));
     sanitized[remainderIndex].is_remainder = true;
   }
 
@@ -793,7 +844,7 @@ async function handleTransactionsProvided(
   transactions: ParsedTransaction[],
   sourceMessage: string
 ): Promise<string> {
-  const { list, error } = sanitizeTransactions(transactions);
+  const { list, error } = sanitizeTransactions(transactions, sourceMessage);
   if (error) {
     return error;
   }
@@ -1008,6 +1059,27 @@ async function handleDatabaseCommand(
     ].join("\n");
   }
 
+  if (parsed.command_type === "delete_all") {
+    const count = await deleteAllTransactions(user.id);
+    return count > 0
+      ? `Semua transaksi (${count} baris) sudah dihapus.`
+      : "Tidak ada transaksi yang perlu dihapus.";
+  }
+
+  if (parsed.command_type === "delete_range") {
+    const range =
+      parsed.start_date || parsed.end_date
+        ? toDateRange(user.timezone, parsed.start_date, parsed.end_date, false)
+        : null;
+    if (!range) {
+      return "Sebutkan rentang tanggal, contoh: hapus transaksi minggu ini / tanggal 2026-02-20.";
+    }
+    const count = await deleteTransactionsByRange(user.id, range.startIso, range.endIsoExclusive);
+    return count > 0
+      ? `Transaksi pada rentang ${range.label} terhapus (${count} baris).`
+      : `Tidak ada transaksi pada rentang ${range.label}.`;
+  }
+
   if (parsed.command_type === "update_last_transaction") {
     const last = await getLastTransaction(user.id);
     if (!last) {
@@ -1067,6 +1139,10 @@ async function handleChat(user: UserRow, message: string): Promise<string> {
       "Tugasku bantu catat transaksi, bikin ringkasan, dan kasih insight dari datamu.",
       "Kalau mau, langsung kirim aja transaksi baru sekarang.",
     ].join("\n");
+  }
+
+  if (isHelpRequest(message)) {
+    return buildHelpText(user);
   }
 
   const now = DateTime.now().setZone(user.timezone);

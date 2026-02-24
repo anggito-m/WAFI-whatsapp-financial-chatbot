@@ -490,20 +490,71 @@ function fallbackDbCommand(message: string, timezone: string): ParsedDbCommand {
   const limit = parsePositiveInt(limitMatch?.[1]);
 
   const dateNow = DateTime.now().setZone(timezone);
-  const startDate = /\b(this month|bulan ini)\b/.test(normalized)
-    ? dateNow.startOf("month").toISODate()
-    : /\b(this week|minggu ini)\b/.test(normalized)
-      ? dateNow.startOf("week").toISODate()
-      : null;
-  const endDate = /\b(this month|bulan ini)\b/.test(normalized)
-    ? dateNow.endOf("month").toISODate()
-    : /\b(this week|minggu ini)\b/.test(normalized)
-      ? dateNow.endOf("week").toISODate()
-      : null;
+  function relativeRange(): { start: string; end: string } | null {
+    const dayString = (dt: DateTime) => dt.toISODate();
+    const lastWeek =
+      /\b(seminggu\s+ke\s*belakang|7\s*hari\s+(terakhir|kebelakang)|last week)\b/.test(normalized);
+    if (lastWeek) {
+      const start = dayString(dateNow.minus({ days: 6 })) ?? null;
+      const end = dayString(dateNow) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    const weekThis = /\b(this week|minggu ini)\b/.test(normalized);
+    if (weekThis) {
+      const start = dayString(dateNow.startOf("week")) ?? null;
+      const end = dayString(dateNow.endOf("week")) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    const monthThis = /\b(this month|bulan ini)\b/.test(normalized);
+    if (monthThis) {
+      const start = dayString(dateNow.startOf("month")) ?? null;
+      const end = dayString(dateNow.endOf("month")) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    const dayThis = /\b(hari ini|today|jam ini)\b/.test(normalized);
+    if (dayThis) {
+      const start = dayString(dateNow.startOf("day")) ?? null;
+      const end = dayString(dateNow.endOf("day")) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    const daysBackMatch = normalized.match(/(\d+)\s*hari\s*(terakhir|kebelakang|ke belakang|ini)/);
+    if (daysBackMatch) {
+      const n = Math.max(1, Math.min(31, Number.parseInt(daysBackMatch[1], 10)));
+      const start = dayString(dateNow.minus({ days: n - 1 })) ?? null;
+      const end = dayString(dateNow) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    const weeksBackMatch = normalized.match(/(\d+)\s*minggu\s*(terakhir|kebelakang|ke belakang)/);
+    if (weeksBackMatch) {
+      const n = Math.max(1, Math.min(12, Number.parseInt(weeksBackMatch[1], 10)));
+      const start = dayString(dateNow.minus({ days: n * 7 - 1 })) ?? null;
+      const end = dayString(dateNow) ?? null;
+      if (start && end) return { start, end };
+      return null;
+    }
+    return null;
+  }
+
+  const rel = relativeRange();
+  const startDate = rel?.start ?? null;
+  const endDate = rel?.end ?? null;
 
   let commandType: DbCommandType = "query";
   if (/\b(hapus|delete|remove)\b/.test(normalized)) {
-    commandType = transactionId ? "delete_by_id" : "delete_last_transaction";
+    const wantsAll =
+      /\b(hapus semua|delete all|clear all|bersihkan semua|hapus seluruh|wipe all)\b/.test(normalized);
+    if (wantsAll) {
+      commandType = "delete_all";
+    } else if (startDate || endDate) {
+      commandType = "delete_range";
+    } else {
+      commandType = transactionId ? "delete_by_id" : "delete_last_transaction";
+    }
   }
   if (/\b(ubah|update|edit|koreksi)\b/.test(normalized)) {
     commandType = transactionId ? "update_by_id" : "update_last_transaction";
@@ -546,6 +597,8 @@ function normalizeDbCommand(result: ParsedDbCommand, fallback: ParsedDbCommand):
     "query",
     "delete_last_transaction",
     "delete_by_id",
+    "delete_all",
+    "delete_range",
     "update_last_transaction",
     "update_by_id",
     "unknown"

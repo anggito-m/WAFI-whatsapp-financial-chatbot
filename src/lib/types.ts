@@ -27,6 +27,8 @@ export type DbCommandType =
   | "query"
   | "delete_last_transaction"
   | "delete_by_id"
+  | "delete_all"
+  | "delete_range"
   | "update_last_transaction"
   | "update_by_id"
   | "unknown";

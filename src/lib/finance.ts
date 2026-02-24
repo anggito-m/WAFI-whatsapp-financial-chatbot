@@ -243,6 +243,32 @@ export async function getTopSpendingCategories(
   return rows.map((row) => ({ category: row.category, total: asNumber(row.total) }));
 }
 
+export async function deleteAllTransactions(userId: number): Promise<number> {
+  const rows = await query<{ count: string | number }>(
+    `DELETE FROM transactions WHERE user_id = $1 RETURNING 1`,
+    [userId]
+  );
+  return rows.length;
+}
+
+export async function deleteTransactionsByRange(
+  userId: number,
+  startIso: string,
+  endIsoExclusive: string
+): Promise<number> {
+  const rows = await query<{ count: string | number }>(
+    `
+      DELETE FROM transactions
+      WHERE user_id = $1
+        AND occurred_at >= $2
+        AND occurred_at < $3
+      RETURNING 1
+    `,
+    [userId, startIso, endIsoExclusive]
+  );
+  return rows.length;
+}
+
 export async function getCategorySpend(
   userId: number,
   category: string,
