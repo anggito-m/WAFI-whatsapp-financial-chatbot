@@ -145,9 +145,14 @@ export async function POST(request: Request) {
                 source: "csv",
                 requestUrl: request.url
               });
-              const json = await resp.json();
+              let json: any = {};
+              try {
+                json = await resp.json();
+              } catch {
+                // ignore parse error
+              }
               if (!resp.ok) {
-                await sendWhatsAppMessage(from, `Impor CSV gagal: ${json.error ?? "unknown error"}`);
+                await sendWhatsAppMessage(from, `Impor CSV gagal: ${json.error ?? resp.statusText}`);
               } else {
                 await sendWhatsAppMessage(
                   from,
@@ -169,9 +174,14 @@ export async function POST(request: Request) {
                 source: "photo",
                 requestUrl: request.url
               });
-              const json = await resp.json();
+              let json: any = {};
+              try {
+                json = await resp.json();
+              } catch {
+                // ignore parse error
+              }
               if (!resp.ok) {
-                await sendWhatsAppMessage(from, `Impor foto gagal: ${json.error ?? "unknown error"}`);
+                await sendWhatsAppMessage(from, `Impor foto gagal: ${json.error ?? resp.statusText}`);
               } else {
                 await sendWhatsAppMessage(
                   from,

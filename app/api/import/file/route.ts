@@ -2,15 +2,13 @@ import { NextResponse } from "next/server";
 import Tesseract from "tesseract.js";
 import { env } from "@/src/lib/env";
 import { insertIngestFile, insertIngestRow, mapCsvRowToTransaction, parseCsvBuffer } from "@/src/lib/ingest";
-import { createRequire } from "module";
+import path from "node:path";
 
 export const runtime = "nodejs";
 
-const require = createRequire(import.meta.url);
-
 async function ensureWorkerFiles(): Promise<{ worker: string; core: string }> {
-  const worker = require.resolve("tesseract.js/src/worker-script/node/index.js");
-  const core = require.resolve("tesseract.js-core/tesseract-core.wasm.js");
+  const worker = path.join(process.cwd(), "node_modules", "tesseract.js", "src", "worker-script", "node", "index.js");
+  const core = path.join(process.cwd(), "node_modules", "tesseract.js-core", "tesseract-core.wasm.js");
   return { worker, core };
 }
 
