@@ -40,10 +40,11 @@ export const env = {
   TESSERACT_CDN_BASE:
     getOptional("TESSERACT_CDN_BASE") ?? "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist",
   AGENT_MAX_ACTIONS: Number.parseInt(getOptional("AGENT_MAX_ACTIONS") ?? "3", 10),
-  AGENT_HISTORY_LIMIT: Number.parseInt(getOptional("AGENT_HISTORY_LIMIT") ?? "10", 10),
+  AGENT_HISTORY_LIMIT: Number.parseInt(getOptional("AGENT_HISTORY_LIMIT") ?? "20", 10),
   AGENT_MAX_TOKENS: Number.parseInt(getOptional("AGENT_MAX_TOKENS") ?? "8000", 10),
   AGENT_ERROR_BUDGET: Number.parseInt(getOptional("AGENT_ERROR_BUDGET") ?? "3", 10),
   AGENT_DEBUG_LOG: getOptional("AGENT_DEBUG_LOG") === "1",
   VECTOR_DIM: Number.parseInt(getOptional("VECTOR_DIM") ?? "1536", 10),
-  EMBEDDING_MODEL: getOptional("EMBEDDING_MODEL") ?? ""
+  EMBEDDING_MODEL: getOptional("EMBEDDING_MODEL") ?? "",
+  PENDING_TTL_MINUTES: Number.parseInt(getOptional("PENDING_TTL_MINUTES") ?? "15", 10)
 };

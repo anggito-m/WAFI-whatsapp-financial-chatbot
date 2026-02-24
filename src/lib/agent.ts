@@ -16,6 +16,7 @@ type AgentAction =
   | { tool: "rule_command"; params?: Partial<ParsedRuleCommand> }
   | { tool: "import_summary"; params?: Record<string, unknown> }
   | { tool: "confirm_import"; params: { ingest_id: number } }
+  | { tool: "apply_pending_action"; params?: { pending_id?: number } }
   | { tool: "send_reply"; params: { text: string } }
   | { tool: "fallback_error"; params?: { reason?: string } };
 
@@ -36,6 +37,8 @@ function buildSystemPrompt(user: UserRow, context: string): string {
 Selalu putuskan sendiri mana pemasukan/pengeluaran/utang dari konteks, jangan bergantung daftar kata.
 Jika ada "sisanya", buat satu transaksi expense dengan is_remainder=true dan amount=null (akan dihitung tool).
 Selalu isi type dan category (pakai "lainnya" jika tidak jelas).
+Jika user minta hapus transaksi (semua/range/id/terakhir), WAJIB panggil tool db_command dengan parameter yang sesuai. Jangan hanya kirim teks konfirmasi.
+Jika ada pending action menunggu konfirmasi, gunakan tool apply_pending_action saat user menyatakan ya/ok/batal.
 Kembalikan JSON dengan key: actions (list). Tiap action: {"tool":"...","params":{...}}. Jika hanya mau balas teks, pakai tool "send_reply".
 Tools yang tersedia:
 - log_transactions: catat array transaksi.
@@ -44,6 +47,7 @@ Tools yang tersedia:
 - rule_command: buat/lihat/hapus aturan, toggle alert anomali.
 - import_summary: instruksikan user kirim file.
 - confirm_import: user memberi ingest_id yang sudah diunggah; ambil draft dan simpan sebagai transaksi.
+- apply_pending_action: eksekusi atau ambil pending action (hapus, konfirmasi impor, dsb).
 - send_reply: jawaban teks.
 - fallback_error: jika sesuatu tidak jelas, panggil ini dengan reason.`;
 }

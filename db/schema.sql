@@ -108,3 +108,16 @@ CREATE INDEX IF NOT EXISTS idx_transactions_user_type_occurred_at
 
 CREATE INDEX IF NOT EXISTS idx_transactions_user_category_occurred_at
   ON transactions(user_id, category, occurred_at DESC);
+
+-- Pending actions (confirmation flows)
+CREATE TABLE IF NOT EXISTS pending_actions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  payload JSONB,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_actions_user_expires
+  ON pending_actions(user_id, expires_at DESC);

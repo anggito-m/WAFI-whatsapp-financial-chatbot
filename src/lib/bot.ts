@@ -44,6 +44,7 @@ import { getEmbedding } from "@/src/lib/embedding";
 import { getSimilarMessages, storeEmbedding } from "@/src/lib/memory";
 import { getTopCategoryMerchant } from "@/src/lib/popularity";
 import { summarizeMetrics, recordAgentRun } from "@/src/lib/metrics";
+import { createPending, deletePending, getActivePending, getPendingById, PendingRow } from "@/src/lib/pending";
 import {
   formatCurrency,
   formatDateInTimezone,
@@ -86,6 +87,16 @@ function isCreatorQuestion(message: string): boolean {
       normalized,
     )
   );
+}
+
+function isYes(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  return /^(ya|iya|ok|oke|yes|y|konfirmasi|lanjut)$/i.test(m);
+}
+
+function isNo(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  return /^(tidak|nggak|gak|engga|batal|cancel|no|n)$/i.test(m);
 }
 
 function isHelpRequest(message: string): boolean {
@@ -897,6 +908,43 @@ async function handleConfirmImport(user: UserRow, ingestId: number): Promise<str
   return `Hasil konfirmasi impor #${ingestId}:\n${result}`;
 }
 
+async function applyPending(user: UserRow, pending: PendingRow): Promise<string> {
+  if (pending.action === "delete_all") {
+    const count = await deleteAllTransactions(user.id);
+    await deletePending(pending.id);
+    if (env.AGENT_DEBUG_LOG) console.log(`pending:execute delete_all user=${user.id} count=${count}`);
+    return count > 0 ? `Semua transaksi (${count}) sudah dihapus.` : "Tidak ada transaksi untuk dihapus.";
+  }
+  if (pending.action === "delete_by_id") {
+    const id = Number((pending.payload as any)?.transaction_id ?? 0);
+    const deleted = id ? await deleteTransactionById(user.id, id) : null;
+    await deletePending(pending.id);
+    if (env.AGENT_DEBUG_LOG) console.log(`pending:execute delete_by_id user=${user.id} id=${id}`);
+    return deleted ? `Transaksi #${id} dihapus.` : `Transaksi #${id} tidak ditemukan.`;
+  }
+  if (pending.action === "delete_range") {
+    const startIso = (pending.payload as any)?.startIso;
+    const endIso = (pending.payload as any)?.endIso;
+    const label = (pending.payload as any)?.label ?? "rentang tersebut";
+    if (!startIso || !endIso) {
+      await deletePending(pending.id);
+      return "Rentang tanggal tidak valid.";
+    }
+    const count = await deleteTransactionsByRange(user.id, startIso, endIso);
+    await deletePending(pending.id);
+    if (env.AGENT_DEBUG_LOG) console.log(`pending:execute delete_range user=${user.id} count=${count}`);
+    return count > 0 ? `Transaksi pada ${label} dihapus (${count}).` : `Tidak ada transaksi pada ${label}.`;
+  }
+  if (pending.action === "ingest_confirm") {
+    const ingestId = Number((pending.payload as any)?.ingest_id ?? 0);
+    await deletePending(pending.id);
+    if (!ingestId) return "ID impor tidak valid.";
+    return await handleConfirmImport(user, ingestId);
+  }
+  await deletePending(pending.id);
+  return "Pending action tidak dikenal, dibatalkan.";
+}
+
 function buildDbUpdatePayload(parsed: ParsedDbCommand): {
   type?: TransactionType;
   category?: string;
@@ -1049,21 +1097,13 @@ async function handleDatabaseCommand(
     if (!parsed.transaction_id) {
       return `Aku butuh ID transaksi yang mau dihapus.\n${dbCommandHelpText()}`;
     }
-    const deleted = await deleteTransactionById(user.id, parsed.transaction_id);
-    if (!deleted) {
-      return `Transaksi dengan ID #${parsed.transaction_id} tidak ditemukan.`;
-    }
-    return [
-      `Berhasil hapus transaksi #${parsed.transaction_id}.`,
-      formatTransactionLine(deleted, user),
-    ].join("\n");
+    const pending = await createPending(user.id, "delete_by_id", { transaction_id: parsed.transaction_id });
+    return `Konfirmasi hapus transaksi #${parsed.transaction_id}? (ya/tidak)\nPending ID: ${pending.id}`;
   }
 
   if (parsed.command_type === "delete_all") {
-    const count = await deleteAllTransactions(user.id);
-    return count > 0
-      ? `Semua transaksi (${count} baris) sudah dihapus.`
-      : "Tidak ada transaksi yang perlu dihapus.";
+    const pending = await createPending(user.id, "delete_all", {});
+    return `Konfirmasi hapus semua transaksi? (ya/tidak)\nPending ID: ${pending.id}`;
   }
 
   if (parsed.command_type === "delete_range") {
@@ -1074,10 +1114,12 @@ async function handleDatabaseCommand(
     if (!range) {
       return "Sebutkan rentang tanggal, contoh: hapus transaksi minggu ini / tanggal 2026-02-20.";
     }
-    const count = await deleteTransactionsByRange(user.id, range.startIso, range.endIsoExclusive);
-    return count > 0
-      ? `Transaksi pada rentang ${range.label} terhapus (${count} baris).`
-      : `Tidak ada transaksi pada rentang ${range.label}.`;
+    const pending = await createPending(user.id, "delete_range", {
+      startIso: range.startIso,
+      endIso: range.endIsoExclusive,
+      label: range.label
+    });
+    return `Konfirmasi hapus transaksi rentang ${range.label}? (ya/tidak)\nPending ID: ${pending.id}`;
   }
 
   if (parsed.command_type === "update_last_transaction") {
@@ -1186,6 +1228,20 @@ export async function processIncomingText(
   const user = await ensureUser(input.from, input.name);
   await storeMessageEmbedding(user, "user", input.body);
 
+  // Check pending actions before agent
+  const pending = await getActivePending(user.id);
+  if (pending) {
+    if (isYes(input.body)) {
+      const result = await applyPending(user, pending);
+      return [{ type: "text", text: result }];
+    }
+    if (isNo(input.body)) {
+      await deletePending(pending.id);
+      if (env.AGENT_DEBUG_LOG) console.log(`pending:cancel user=${user.id} id=${pending.id}`);
+      return [{ type: "text", text: "Oke, pending dibatalkan." }];
+    }
+  }
+
   // Circuit breaker: if too many consecutive errors, use lightweight mode
   if (agentErrorStreak >= env.AGENT_ERROR_BUDGET) {
     const fallback = await handleTransactionOrFallback(user, input.body);
@@ -1211,6 +1267,7 @@ export async function processIncomingText(
   const userEmbedding = await getEmbedding(redactedMsg);
   const similar = await getSimilarMessages(user.id, userEmbedding, 8);
   const topCatMerch = await getTopCategoryMerchant(user.id, 10);
+  const pendingCtx = await getActivePending(user.id);
   const context = [
     `User: ${user.whatsapp_number}`,
     `Timezone: ${user.timezone}`,
@@ -1236,7 +1293,10 @@ export async function processIncomingText(
       topCatMerch.length
         ? topCatMerch.map((t) => `${t.category}${t.merchant ? "@" + t.merchant : ""}`).join(", ")
         : "none"
-    }`
+    }`,
+    pendingCtx
+      ? `Pending: ${pendingCtx.action} expires ${DateTime.fromISO(pendingCtx.expires_at).setZone(user.timezone).toFormat("dd LLL HH:mm")}`
+      : "Pending: none"
   ].join("\n");
 
   const redactedCtx = redactSensitive(context);
@@ -1278,6 +1338,14 @@ export async function processIncomingText(
         replies.push({ type: "text", text: "Ingest ID tidak ada. Kirim: konfirmasi impor <id>." });
       } else {
         replies.push({ type: "text", text: await handleConfirmImport(user, ingestId) });
+      }
+  } else if (action.tool === "apply_pending_action") {
+      const pid = (action as any).params?.pending_id;
+      const pending = pid ? await getPendingById(pid, user.id) : await getActivePending(user.id);
+      if (!pending) {
+        replies.push({ type: "text", text: "Tidak ada pending yang bisa dieksekusi." });
+      } else {
+        replies.push({ type: "text", text: await applyPending(user, pending) });
       }
       } else if (action.tool === "fallback_error") {
         replies.push({ type: "text", text: "Aku masuk mode ringan. Coba kirim lagi dengan format sederhana atau tunggu sebentar." });

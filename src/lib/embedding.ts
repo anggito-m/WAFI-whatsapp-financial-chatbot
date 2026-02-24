@@ -1,7 +1,49 @@
 import OpenAI from "openai";
+import crypto from "node:crypto";
 import { env } from "@/src/lib/env";
 
 let warnedOnce = false;
+const cache = new Map<string, number[]>();
+const CACHE_MAX = 200;
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const cacheTime = new Map<string, number>();
+
+function cacheKey(text: string): string {
+  const h = crypto.createHash("sha256").update(env.EMBEDDING_MODEL || env.HF_EMBEDDING_MODEL || "none");
+  h.update(text.slice(0, 3000));
+  return h.digest("hex");
+}
+
+function cacheGet(key: string): number[] | null {
+  const ts = cacheTime.get(key);
+  if (!ts) return null;
+  if (Date.now() - ts > CACHE_TTL_MS) {
+    cache.delete(key);
+    cacheTime.delete(key);
+    return null;
+  }
+  return cache.get(key) ?? null;
+}
+
+function cacheSet(key: string, vec: number[]) {
+  if (cache.size >= CACHE_MAX) {
+    // simple LRU eviction: delete oldest timestamp
+    let oldestKey: string | null = null;
+    let oldestTs = Infinity;
+    for (const [k, ts] of cacheTime.entries()) {
+      if (ts < oldestTs) {
+        oldestTs = ts;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) {
+      cache.delete(oldestKey);
+      cacheTime.delete(oldestKey);
+    }
+  }
+  cache.set(key, vec);
+  cacheTime.set(key, Date.now());
+}
 
 function buildClient(): OpenAI | null {
   if (env.OPENAI_API_KEY && env.EMBEDDING_MODEL) {
@@ -60,10 +102,16 @@ function normalizeVector(vec: number[] | null): number[] | null {
 }
 
 export async function getEmbedding(text: string): Promise<number[] | null> {
+  const key = cacheKey(text);
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
   if (!embeddingClient || !env.EMBEDDING_MODEL) {
     // Try HuggingFace fallback
     const hfVec = await getEmbeddingFromHuggingFace(text);
-    return normalizeVector(hfVec);
+    const norm = normalizeVector(hfVec);
+    if (norm) cacheSet(key, norm);
+    return norm;
   }
   try {
     const res = await embeddingClient.embeddings.create({
@@ -71,7 +119,9 @@ export async function getEmbedding(text: string): Promise<number[] | null> {
       input: text.slice(0, 3000)
     });
     const vector = res.data[0]?.embedding;
-    return normalizeVector(Array.isArray(vector) ? vector : null);
+    const norm = normalizeVector(Array.isArray(vector) ? vector : null);
+    if (norm) cacheSet(key, norm);
+    return norm;
   } catch (error: any) {
     if (!warnedOnce) {
       console.error("embedding failed", error?.error ?? error);
@@ -79,6 +129,8 @@ export async function getEmbedding(text: string): Promise<number[] | null> {
     }
     // fallback to HF if available
     const hfVec = await getEmbeddingFromHuggingFace(text);
-    return normalizeVector(hfVec);
+    const norm = normalizeVector(hfVec);
+    if (norm) cacheSet(key, norm);
+    return norm;
   }
 }
