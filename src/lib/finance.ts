@@ -4,6 +4,7 @@ import { env } from "@/src/lib/env";
 import { matchRule } from "@/src/lib/rules";
 import { refreshCategoryPopularity } from "@/src/lib/popularity";
 import type {
+  AccountBalanceRow,
   CategoryRule,
   DailySeriesRow,
   ParsedTransaction,
@@ -16,6 +17,11 @@ import type {
 type RawTransactionRow = Omit<TransactionRow, "amount" | "occurred_at"> & {
   amount: string | number;
   occurred_at: string | Date;
+};
+
+type RawAccountBalanceRow = Omit<AccountBalanceRow, "balance" | "captured_at"> & {
+  balance: string | number;
+  captured_at: string | Date;
 };
 
 function asNumber(value: number | string): number {
@@ -57,6 +63,15 @@ function mapTransactionRow(row: RawTransactionRow): TransactionRow {
     ...row,
     amount: asNumber(row.amount),
     occurred_at: normalizeOccurredAt(row.occurred_at)
+  };
+}
+
+function mapAccountBalanceRow(row: RawAccountBalanceRow): AccountBalanceRow {
+  return {
+    id: row.id,
+    account_label: row.account_label,
+    balance: asNumber(row.balance),
+    captured_at: normalizeOccurredAt(row.captured_at)
   };
 }
 
@@ -183,6 +198,49 @@ export async function createTransactionsBatch(
   // Refresh popularity summary (best-effort)
   refreshCategoryPopularity(userId).catch(() => {});
   return results;
+}
+
+export async function createAccountBalanceSnapshot(
+  userId: number,
+  balances: Array<{ accountLabel: string; balance: number }>,
+  sourceMessage: string
+): Promise<AccountBalanceRow[]> {
+  if (!balances.length) return [];
+  const capturedAt = DateTime.utc().toISO() ?? new Date().toISOString();
+  const results: AccountBalanceRow[] = [];
+
+  for (const item of balances) {
+    const rows = await query<RawAccountBalanceRow>(
+      `
+        INSERT INTO account_balances (user_id, account_label, balance, captured_at, source_message)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, account_label, balance, captured_at
+      `,
+      [userId, item.accountLabel, item.balance, capturedAt, sourceMessage]
+    );
+    results.push(mapAccountBalanceRow(rows[0]));
+  }
+
+  return results;
+}
+
+export async function getLatestAccountBalances(userId: number): Promise<AccountBalanceRow[]> {
+  const rows = await query<RawAccountBalanceRow>(
+    `
+      WITH latest AS (
+        SELECT MAX(captured_at) AS captured_at
+        FROM account_balances
+        WHERE user_id = $1
+      )
+      SELECT id, account_label, balance, captured_at
+      FROM account_balances
+      WHERE user_id = $1
+        AND captured_at = (SELECT captured_at FROM latest)
+      ORDER BY account_label ASC
+    `,
+    [userId]
+  );
+  return rows.map(mapAccountBalanceRow);
 }
 
 export async function getSummary(

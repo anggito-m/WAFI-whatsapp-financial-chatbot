@@ -16,6 +16,7 @@ import {
   buildPieIncomeExpenseChart
 } from "@/src/lib/charts";
 import {
+  createAccountBalanceSnapshot,
   createTransaction,
   createTransactionsBatch,
   deleteLastTransaction,
@@ -27,6 +28,7 @@ import {
   getCategorySpend,
   getLastTransaction,
   getRecentTransactions,
+  getLatestAccountBalances,
   getSummary,
   getTopSpendingCategories,
   listTransactions,
@@ -99,6 +101,58 @@ function isNo(message: string): boolean {
   return /^(tidak|nggak|gak|engga|batal|cancel|no|n)$/i.test(m);
 }
 
+function parseBalanceAmount(raw: string): number | null {
+  const cleaned = raw.replace(/[^\d.,]/g, "");
+  if (!cleaned) return null;
+  const hasDot = cleaned.includes(".");
+  const hasComma = cleaned.includes(",");
+  let normalized = cleaned;
+
+  if (hasDot && hasComma) {
+    normalized =
+      cleaned.lastIndexOf(".") > cleaned.lastIndexOf(",")
+        ? cleaned.replace(/,/g, "")
+        : cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (hasComma) {
+    const parts = cleaned.split(",");
+    normalized = parts[parts.length - 1].length <= 2 ? cleaned.replace(",", ".") : cleaned.replace(/,/g, "");
+  }
+
+  const num = Number.parseFloat(normalized);
+  if (!Number.isFinite(num) || num < 0) return null;
+  return num;
+}
+
+function parseBalanceSnapshotMessage(message: string): Array<{ accountLabel: string; balance: number }> | null {
+  if (!/\b(saldo|rekening|account)\b/i.test(message)) {
+    return null;
+  }
+
+  const lines = message.split(/\r?\n/);
+  const results: Array<{ accountLabel: string; balance: number }> = [];
+
+  for (const line of lines) {
+    const numbered = line.match(/^\s*(\d+)\s*[\)\.\-:]\s*([0-9][0-9.,]*)\s*$/);
+    if (numbered) {
+      const amount = parseBalanceAmount(numbered[2]);
+      if (amount !== null) {
+        results.push({ accountLabel: `Rekening ${numbered[1]}`, balance: amount });
+      }
+      continue;
+    }
+
+    const labeled = line.match(/^\s*(rekening\s*[a-z0-9_-]*)\s*[:\-]\s*([0-9][0-9.,]*)\s*$/i);
+    if (labeled) {
+      const amount = parseBalanceAmount(labeled[2]);
+      if (amount !== null) {
+        results.push({ accountLabel: toTitleCase(labeled[1].trim()), balance: amount });
+      }
+    }
+  }
+
+  return results.length ? results : null;
+}
+
 function isHelpRequest(message: string): boolean {
   const normalized = message.toLowerCase();
   return /\b(help|bantuan|contoh|perintah|cara pakai)\b/.test(normalized);
@@ -113,6 +167,7 @@ function buildHelpText(user: UserRow): string {
     "- DB lihat: \"tampilkan 20 transaksi terakhir\"",
     "- DB ubah: \"ubah transaksi terakhir jadi 75000 kategori makan siang catatan nasi padang\"",
     "- DB hapus: \"hapus transaksi 3 hari terakhir\" / \"hapus transaksi id 15\" / \"hapus semua transaksi\"",
+    "- Saldo rekening: \"catat saldo rekening:\\n1) 900000\\n2) 1200000\" lalu \"lihat saldo rekening\"",
     "- Aturan kategori: \"atur aturan merchant indomaret = kategori belanja\"",
     "- Anomali: \"matikan alert anomali\" / \"nyalakan alert anomali\"",
     "- Impor: kirim CSV atau foto struk, lalu \"konfirmasi impor <id>\" untuk simpan.",
@@ -1187,6 +1242,19 @@ async function handleChat(user: UserRow, message: string): Promise<string> {
     return buildHelpText(user);
   }
 
+  if (/\b(lihat|tampilkan|show|cek)\b.*\b(saldo)\b.*\b(rekening)\b/i.test(message)) {
+    const balances = await getLatestAccountBalances(user.id);
+    if (!balances.length) {
+      return "Belum ada data saldo rekening yang tercatat.";
+    }
+    const total = balances.reduce((s, b) => s + b.balance, 0);
+    return [
+      "Saldo rekening terakhir:",
+      ...balances.map((b) => `- ${b.account_label}: ${formatCurrency(b.balance, user.currency_code)}`),
+      `Total saldo: ${formatCurrency(total, user.currency_code)}`
+    ].join("\n");
+  }
+
   const now = DateTime.now().setZone(user.timezone);
   const summary = await getSummary(
     user.id,
@@ -1227,6 +1295,19 @@ export async function processIncomingText(
 ): Promise<BotMessage[]> {
   const user = await ensureUser(input.from, input.name);
   await storeMessageEmbedding(user, "user", input.body);
+
+  const snapshot = parseBalanceSnapshotMessage(input.body);
+  if (snapshot?.length) {
+    const rows = await createAccountBalanceSnapshot(user.id, snapshot, input.body);
+    const total = rows.reduce((s, r) => s + r.balance, 0);
+    const reply = [
+      `Saldo ${rows.length} rekening sudah dicatat.`,
+      ...rows.map((r) => `- ${r.account_label}: ${formatCurrency(r.balance, user.currency_code)}`),
+      `Total saldo: ${formatCurrency(total, user.currency_code)}`
+    ].join("\n");
+    await storeMessageEmbedding(user, "assistant", reply);
+    return [{ type: "text", text: reply }];
+  }
 
   // Check pending actions before agent
   const pending = await getActivePending(user.id);

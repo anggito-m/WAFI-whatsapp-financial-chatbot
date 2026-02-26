@@ -93,6 +93,13 @@ export interface TransactionRow {
   occurred_at: string;
 }
 
+export interface AccountBalanceRow {
+  id: number;
+  account_label: string;
+  balance: number;
+  captured_at: string;
+}
+
 export interface SummaryRow {
   income: number;
   expense: number;
