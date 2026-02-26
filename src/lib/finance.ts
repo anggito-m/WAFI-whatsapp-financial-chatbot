@@ -7,6 +7,8 @@ import type {
   AccountBalanceRow,
   CategoryRule,
   DailySeriesRow,
+  EstimatedAccountBalanceRow,
+  EstimatedBalanceSnapshot,
   ParsedTransaction,
   SummaryRow,
   TransactionRow,
@@ -32,6 +34,13 @@ function asNumber(value: number | string): number {
 }
 
 function normalizeCategory(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeAccountLabel(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
@@ -165,10 +174,10 @@ export async function createTransaction(
   const created = await query<RawTransactionRow>(
     `
       INSERT INTO transactions (
-        user_id, type, category, amount, merchant, note, occurred_at, source_message
+        user_id, type, category, amount, merchant, account_label, note, occurred_at, source_message
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING id, type, category, amount, merchant, note, occurred_at
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id, type, category, amount, merchant, account_label, note, occurred_at
     `,
     [
       userId,
@@ -176,6 +185,7 @@ export async function createTransaction(
       normalizeCategory(payload.category),
       payload.amount,
       payload.merchant?.trim() || null,
+      payload.account_label?.trim() || null,
       payload.note?.trim() || null,
       occurredAt,
       sourceMessage
@@ -241,6 +251,118 @@ export async function getLatestAccountBalances(userId: number): Promise<AccountB
     [userId]
   );
   return rows.map(mapAccountBalanceRow);
+}
+
+export async function getEstimatedBalancesFromLatestSnapshot(
+  userId: number
+): Promise<EstimatedBalanceSnapshot | null> {
+  const snapshotRows = await getLatestAccountBalances(userId);
+  if (!snapshotRows.length) {
+    return null;
+  }
+
+  const capturedAt = snapshotRows[0].captured_at;
+  const deltaRows = await query<{
+    account_label: string | null;
+    delta: string | number;
+    tx_count: string | number;
+  }>(
+    `
+      SELECT
+        NULLIF(TRIM(account_label), '') AS account_label,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN type = 'income' THEN amount
+              WHEN type IN ('expense', 'debt') THEN -amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS delta,
+        COUNT(*) AS tx_count
+      FROM transactions
+      WHERE user_id = $1
+        AND occurred_at > $2
+      GROUP BY NULLIF(TRIM(account_label), '')
+    `,
+    [userId, capturedAt]
+  );
+
+  const accountMap = new Map<string, EstimatedAccountBalanceRow>();
+  for (const row of snapshotRows) {
+    const key = normalizeAccountLabel(row.account_label);
+    accountMap.set(key, {
+      account_label: row.account_label,
+      snapshot_balance: row.balance,
+      delta_since_snapshot: 0,
+      estimated_balance: row.balance,
+      delta_tx_count: 0
+    });
+  }
+
+  let unassignedDelta = 0;
+  let unassignedTxCount = 0;
+
+  for (const row of deltaRows) {
+    const delta = asNumber(row.delta);
+    const txCount = Number(row.tx_count);
+    if (!row.account_label) {
+      unassignedDelta += delta;
+      unassignedTxCount += txCount;
+      continue;
+    }
+
+    const key = normalizeAccountLabel(row.account_label);
+    const existing = accountMap.get(key);
+    if (existing) {
+      existing.delta_since_snapshot += delta;
+      existing.delta_tx_count += txCount;
+      existing.estimated_balance = Number(
+        (existing.snapshot_balance + existing.delta_since_snapshot).toFixed(2)
+      );
+      accountMap.set(key, existing);
+      continue;
+    }
+
+    accountMap.set(key, {
+      account_label: row.account_label.trim(),
+      snapshot_balance: 0,
+      delta_since_snapshot: delta,
+      estimated_balance: Number(delta.toFixed(2)),
+      delta_tx_count: txCount
+    });
+  }
+
+  const accounts = [...accountMap.values()]
+    .map((item) => ({
+      ...item,
+      snapshot_balance: Number(item.snapshot_balance.toFixed(2)),
+      delta_since_snapshot: Number(item.delta_since_snapshot.toFixed(2)),
+      estimated_balance: Number(item.estimated_balance.toFixed(2))
+    }))
+    .sort((a, b) =>
+      a.account_label.localeCompare(b.account_label, "id", { sensitivity: "base" })
+    );
+
+  const totalSnapshot = Number(
+    accounts.reduce((sum, item) => sum + item.snapshot_balance, 0).toFixed(2)
+  );
+  const assignedDelta = Number(
+    accounts.reduce((sum, item) => sum + item.delta_since_snapshot, 0).toFixed(2)
+  );
+  const totalDelta = Number((assignedDelta + unassignedDelta).toFixed(2));
+  const totalEstimated = Number((totalSnapshot + totalDelta).toFixed(2));
+
+  return {
+    captured_at: capturedAt,
+    accounts,
+    total_snapshot: totalSnapshot,
+    total_delta: totalDelta,
+    total_estimated: totalEstimated,
+    unassigned_delta: Number(unassignedDelta.toFixed(2)),
+    unassigned_tx_count: unassignedTxCount
+  };
 }
 
 export async function getSummary(
@@ -355,7 +477,7 @@ export async function getRecentTransactions(
 ): Promise<TransactionRow[]> {
   const rows = await query<RawTransactionRow>(
     `
-      SELECT id, type, category, amount, merchant, note, occurred_at
+      SELECT id, type, category, amount, merchant, account_label, note, occurred_at
       FROM transactions
       WHERE user_id = $1
       ORDER BY occurred_at DESC
@@ -373,6 +495,7 @@ export async function listTransactions(
     limit?: number;
     type?: TransactionType | null;
     category?: string | null;
+    accountLabel?: string | null;
     startIso?: string | null;
     endIsoExclusive?: string | null;
   } = {}
@@ -388,6 +511,11 @@ export async function listTransactions(
   if (options.category) {
     params.push(normalizeCategory(options.category));
     conditions.push(`category = $${params.length}`);
+  }
+
+  if (options.accountLabel) {
+    params.push(options.accountLabel.trim().toLowerCase());
+    conditions.push(`LOWER(COALESCE(account_label, '')) = $${params.length}`);
   }
 
   if (options.startIso) {
@@ -406,6 +534,7 @@ export async function listTransactions(
   const rows = await query<RawTransactionRow>(
     `
       SELECT id, type, category, amount, merchant, note, occurred_at
+      , account_label
       FROM transactions
       WHERE ${conditions.join(" AND ")}
       ORDER BY occurred_at DESC
@@ -423,7 +552,7 @@ export async function getTransactionById(
 ): Promise<TransactionRow | null> {
   const rows = await query<RawTransactionRow>(
     `
-      SELECT id, type, category, amount, merchant, note, occurred_at
+      SELECT id, type, category, amount, merchant, account_label, note, occurred_at
       FROM transactions
       WHERE user_id = $1 AND id = $2
       LIMIT 1
@@ -451,7 +580,7 @@ export async function deleteTransactionById(
     `
       DELETE FROM transactions
       WHERE user_id = $1 AND id = $2
-      RETURNING id, type, category, amount, merchant, note, occurred_at
+      RETURNING id, type, category, amount, merchant, account_label, note, occurred_at
     `,
     [userId, transactionId]
   );
@@ -476,7 +605,7 @@ export async function deleteLastTransaction(userId: number): Promise<Transaction
       DELETE FROM transactions t
       USING target
       WHERE t.id = target.id
-      RETURNING t.id, t.type, t.category, t.amount, t.merchant, t.note, t.occurred_at
+      RETURNING t.id, t.type, t.category, t.amount, t.merchant, t.account_label, t.note, t.occurred_at
     `,
     [userId]
   );
@@ -518,6 +647,7 @@ export async function updateTransactionById(
     category?: string;
     amount?: number;
     merchant?: string | null;
+    account_label?: string | null;
     note?: string | null;
     occurred_at?: string;
   }
@@ -548,6 +678,11 @@ export async function updateTransactionById(
     sets.push(`merchant = $${params.length}`);
   }
 
+  if (update.account_label !== undefined) {
+    params.push(update.account_label?.trim() || null);
+    sets.push(`account_label = $${params.length}`);
+  }
+
   if (update.note !== undefined) {
     params.push(update.note?.trim() || null);
     sets.push(`note = $${params.length}`);
@@ -571,7 +706,7 @@ export async function updateTransactionById(
       UPDATE transactions
       SET ${sets.join(", ")}
       WHERE user_id = $1 AND id = $2
-      RETURNING id, type, category, amount, merchant, note, occurred_at
+      RETURNING id, type, category, amount, merchant, account_label, note, occurred_at
     `,
     params
   );
@@ -581,6 +716,30 @@ export async function updateTransactionById(
   }
 
   return mapTransactionRow(rows[0]);
+}
+
+export async function deleteAllFinancialData(userId: number): Promise<{
+  transactions: number;
+  balances: number;
+  pending: number;
+}> {
+  const pendingRows = await query<{ id: number }>(
+    `DELETE FROM pending_actions WHERE user_id = $1 RETURNING id`,
+    [userId]
+  );
+  const txRows = await query<{ id: number }>(
+    `DELETE FROM transactions WHERE user_id = $1 RETURNING id`,
+    [userId]
+  );
+  const balRows = await query<{ id: number }>(
+    `DELETE FROM account_balances WHERE user_id = $1 RETURNING id`,
+    [userId]
+  );
+  return {
+    transactions: txRows.length,
+    balances: balRows.length,
+    pending: pendingRows.length
+  };
 }
 
 export async function getDailyIncomeExpenseSeries(

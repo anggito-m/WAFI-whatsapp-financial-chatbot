@@ -2,7 +2,12 @@ import { DateTime } from "luxon";
 import { env } from "@/src/lib/env";
 import { query } from "@/src/lib/db";
 
-export type PendingActionType = "delete_all" | "delete_range" | "delete_by_id" | "ingest_confirm";
+export type PendingActionType =
+  | "delete_all"
+  | "delete_all_financial_data"
+  | "delete_range"
+  | "delete_by_id"
+  | "ingest_confirm";
 
 export interface PendingRow {
   id: number;

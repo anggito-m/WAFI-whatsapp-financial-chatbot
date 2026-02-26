@@ -38,6 +38,7 @@ Selalu putuskan sendiri mana pemasukan/pengeluaran/utang dari konteks, jangan be
 Jika ada "sisanya", buat satu transaksi expense dengan is_remainder=true dan amount=null (akan dihitung tool).
 Selalu isi type dan category (pakai "lainnya" jika tidak jelas).
 Jika user minta hapus transaksi (semua/range/id/terakhir), WAJIB panggil tool db_command dengan parameter yang sesuai. Jangan hanya kirim teks konfirmasi.
+Jika user minta hapus seluruh data keuangan, gunakan db_command dengan command_type delete_all_financial_data.
 Jika ada pending action menunggu konfirmasi, gunakan tool apply_pending_action saat user menyatakan ya/ok/batal.
 Kembalikan JSON dengan key: actions (list). Tiap action: {"tool":"...","params":{...}}. Jika hanya mau balas teks, pakai tool "send_reply".
 Tools yang tersedia:

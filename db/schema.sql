@@ -16,11 +16,15 @@ CREATE TABLE IF NOT EXISTS transactions (
   category TEXT NOT NULL,
   amount NUMERIC(14, 2) NOT NULL CHECK (amount > 0),
   merchant TEXT,
+  account_label TEXT,
   note TEXT,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   source_message TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE transactions
+  ADD COLUMN IF NOT EXISTS account_label TEXT;
 
 CREATE TABLE IF NOT EXISTS processed_whatsapp_messages (
   message_id TEXT PRIMARY KEY,

@@ -232,12 +232,15 @@ function fallbackTransaction(message: string, timezone: string): ParsedTransacti
 
   const noteMatch = message.match(/\b(?:note|catatan)\s*[:\-]?\s*(.+)$/i);
   const note = noteMatch?.[1]?.trim() || null;
+  const accountMatch = message.match(/\b(?:rekening|akun|account)\s*[:\-]?\s*([A-Za-z0-9 _-]{2,40})/i);
+  const accountLabel = accountMatch?.[1]?.trim() ?? null;
 
   return {
     type: detectType(message),
     category: extractCategoryFromMessage(message) ?? "lainnya",
     amount,
     merchant,
+    account_label: accountLabel,
     note,
     occurred_at: resolveRelativeDate(message, timezone)
   };
@@ -247,7 +250,7 @@ function fallbackIntent(message: string): MessageIntent {
   const normalized = message.toLowerCase();
 
   if (
-    /(database|db|sql|query|raw data|data mentah|hapus transaksi|ubah transaksi|update transaksi|id transaksi|edit transaksi)/i.test(
+    /(database|db|sql|query|raw data|data mentah|hapus transaksi|hapus semua data|data keuangan|ubah transaksi|update transaksi|id transaksi|edit transaksi)/i.test(
       normalized
     )
   ) {
@@ -259,7 +262,7 @@ function fallbackIntent(message: string): MessageIntent {
   }
 
   if (
-    /(report|summary|ringkasan|detail|rincian|log|chart|grafik|diagram|visualisasi|timeseries|tren|compare|banding|status|spending|pengeluaran|pemasukan|pendapatan|income|how much|berapa|minggu ini|bulan ini|hari ini|today|this week|this month)/i.test(
+    /(report|summary|ringkasan|detail|rincian|log|chart|grafik|diagram|visualisasi|timeseries|tren|compare|banding|status|spending|pengeluaran|pemasukan|pendapatan|income|saldo|rekening|how much|berapa|minggu ini|bulan ini|hari ini|today|this week|this month)/i.test(
       normalized
     )
   ) {
@@ -546,11 +549,17 @@ function fallbackDbCommand(message: string, timezone: string): ParsedDbCommand {
 
   let commandType: DbCommandType = "query";
   if (/\b(hapus|menghapus|dihapus|delete|remove|clear|bersihkan)\b/.test(normalized)) {
+    const wantsAllData =
+      /\b(hapus semua data keuangan|hapus semua data saya|hapus seluruh data|delete all data|clear all financial data)\b/.test(
+        normalized
+      );
     const wantsAll =
       /\b(hapus semua|menghapus semua|hapus seluruh|hapus semua data|delete all|clear all|bersihkan semua|wipe all)\b/.test(
         normalized
       );
-    if (wantsAll) {
+    if (wantsAllData) {
+      commandType = "delete_all_financial_data";
+    } else if (wantsAll) {
       commandType = "delete_all";
     } else if (startDate || endDate) {
       commandType = "delete_range";
@@ -573,6 +582,8 @@ function fallbackDbCommand(message: string, timezone: string): ParsedDbCommand {
   const inferredCategory = extractCategoryFromMessage(message);
   const merchantMatch = message.match(/\b(?:merchant|toko|di|dari|from|to)\s+([A-Za-z0-9&.' -]{2,})/i);
   const updateMerchant = merchantMatch?.[1]?.trim() ?? null;
+  const accountMatch = message.match(/\b(?:rekening|akun|account)\s*[:\-]?\s*([A-Za-z0-9 _-]{2,40})/i);
+  const accountLabel = accountMatch?.[1]?.trim() ?? null;
   const noteMatch = message.match(/\b(?:note|catatan)\s*[:\-]?\s*(.+)$/i);
   const updateNote = noteMatch?.[1]?.trim() ?? null;
   const updateOccurredAt = resolveRelativeDate(message, timezone);
@@ -583,12 +594,14 @@ function fallbackDbCommand(message: string, timezone: string): ParsedDbCommand {
     limit,
     filter_type: detectType(message),
     filter_category: /\b(kategori|category|untuk|for|on)\b/i.test(message) ? inferredCategory : null,
+    filter_account_label: /\b(rekening|akun|account)\b/i.test(message) ? accountLabel : null,
     start_date: startDate,
     end_date: endDate,
     update_type: updateType,
     update_category: cleanCategoryCandidate(updateCategory || "") || inferredCategory,
     update_amount: updateAmount,
     update_merchant: updateMerchant,
+    update_account_label: accountLabel,
     update_note: updateNote,
     update_occurred_at: updateOccurredAt
   };
@@ -600,6 +613,7 @@ function normalizeDbCommand(result: ParsedDbCommand, fallback: ParsedDbCommand):
     "delete_last_transaction",
     "delete_by_id",
     "delete_all",
+    "delete_all_financial_data",
     "delete_range",
     "update_last_transaction",
     "update_by_id",
@@ -630,12 +644,14 @@ function normalizeDbCommand(result: ParsedDbCommand, fallback: ParsedDbCommand):
     limit: safeLimit,
     filter_type: result.filter_type ?? fallback.filter_type,
     filter_category: result.filter_category?.trim().toLowerCase() || fallback.filter_category,
+    filter_account_label: result.filter_account_label?.trim() || fallback.filter_account_label,
     start_date: result.start_date || fallback.start_date,
     end_date: result.end_date || fallback.end_date,
     update_type: result.update_type ?? fallback.update_type,
     update_category: result.update_category?.trim().toLowerCase() || fallback.update_category,
     update_amount: normalizedUpdateAmount,
     update_merchant: result.update_merchant?.trim() || fallback.update_merchant,
+    update_account_label: result.update_account_label?.trim() || fallback.update_account_label,
     update_note: result.update_note?.trim() || fallback.update_note,
     update_occurred_at:
       result.update_occurred_at && DateTime.fromISO(result.update_occurred_at).isValid
@@ -783,6 +799,7 @@ Kembalikan JSON persis dengan key:
   "category":"string|null",
   "amount":number|null,
   "merchant":"string|null",
+  "account_label":"string|null",
   "note":"string|null",
   "occurred_at":"ISO-8601 datetime atau null"
 }
@@ -807,6 +824,7 @@ Aturan:
           ? parseFlexibleNumber(result.amount)
           : fallback.amount,
     merchant: result.merchant?.trim() || fallback.merchant,
+    account_label: result.account_label?.trim() || fallback.account_label || null,
     note: result.note?.trim() || fallback.note,
     occurred_at:
       result.occurred_at && DateTime.fromISO(result.occurred_at).isValid
@@ -832,6 +850,7 @@ Kembalikan JSON:
       "category":"string",
       "amount":number|null,
       "merchant":"string|null",
+      "account_label":"string|null",
       "note":"string|null",
       "occurred_at":"ISO|null",
       "is_remainder":boolean|null
@@ -851,6 +870,7 @@ Aturan:
   if (result?.transactions && Array.isArray(result.transactions) && result.transactions.length) {
     return result.transactions.map((t) => ({
       ...t,
+      account_label: (t as any).account_label?.trim?.() || null,
       amount:
         typeof t.amount === "number"
           ? t.amount
@@ -865,6 +885,8 @@ Aturan:
   const chunks = normalized.split(/,|\bdan\b/).map((c) => c.trim()).filter(Boolean);
   const transactions: ParsedTransaction[] = [];
   let incomeAmount: number | null = null;
+  const accountMatch = message.match(/\b(?:rekening|akun|account)\s*[:\-]?\s*([A-Za-z0-9 _-]{2,40})/i);
+  const accountLabel = accountMatch?.[1]?.trim() ?? null;
   for (const chunk of chunks) {
     const amountMatch = chunk.match(/((?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d{1,2})?)/);
     const amount = amountMatch ? parseFlexibleNumber(amountMatch[1]) : null;
@@ -878,6 +900,7 @@ Aturan:
       category: extractCategoryFromMessage(chunk) ?? (isIncome ? "pemasukan" : "lainnya"),
       amount,
       merchant: null,
+      account_label: accountLabel,
       note: null,
       occurred_at: resolveRelativeDate(message, timezone),
       is_remainder: isRemainder
@@ -898,6 +921,7 @@ Aturan:
         category: "pemasukan",
         amount: incomeAmount,
         merchant: null,
+        account_label: accountLabel,
         note: null,
         occurred_at: resolveRelativeDate(message, timezone),
         is_remainder: false
@@ -984,21 +1008,24 @@ export async function parseDatabaseCommand(
   const result = await requestJson<ParsedDbCommand>(
     `Ekstrak perintah database dari pesan user ke JSON:
 {
-  "command_type":"query|delete_last_transaction|delete_by_id|delete_all|delete_range|update_last_transaction|update_by_id|unknown",
+  "command_type":"query|delete_last_transaction|delete_by_id|delete_all|delete_all_financial_data|delete_range|update_last_transaction|update_by_id|unknown",
   "transaction_id":number|null,
   "limit":number|null,
   "filter_type":"expense|income|debt|null",
   "filter_category":"string|null",
+  "filter_account_label":"string|null",
   "start_date":"YYYY-MM-DD|null",
   "end_date":"YYYY-MM-DD|null",
   "update_type":"expense|income|debt|null",
   "update_category":"string|null",
   "update_amount":number|null,
   "update_merchant":"string|null",
+  "update_account_label":"string|null",
   "update_note":"string|null",
   "update_occurred_at":"ISO-8601|null"
 }
 Aturan:
+- jika user minta hapus semua data keuangan/seluruh data user => delete_all_financial_data
 - jika user minta hapus semua transaksi/data => delete_all
 - jika user minta hapus berdasarkan rentang waktu/tanggal => delete_range
 - jika user minta hapus transaksi terakhir => delete_last_transaction

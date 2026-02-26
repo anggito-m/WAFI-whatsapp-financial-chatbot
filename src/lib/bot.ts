@@ -19,6 +19,7 @@ import {
   createAccountBalanceSnapshot,
   createTransaction,
   createTransactionsBatch,
+  deleteAllFinancialData,
   deleteLastTransaction,
   deleteTransactionById,
   ensureUser,
@@ -28,7 +29,7 @@ import {
   getCategorySpend,
   getLastTransaction,
   getRecentTransactions,
-  getLatestAccountBalances,
+  getEstimatedBalancesFromLatestSnapshot,
   getSummary,
   getTopSpendingCategories,
   listTransactions,
@@ -167,6 +168,7 @@ function buildHelpText(user: UserRow): string {
     "- DB lihat: \"tampilkan 20 transaksi terakhir\"",
     "- DB ubah: \"ubah transaksi terakhir jadi 75000 kategori makan siang catatan nasi padang\"",
     "- DB hapus: \"hapus transaksi 3 hari terakhir\" / \"hapus transaksi id 15\" / \"hapus semua transaksi\"",
+    "- DB hapus total: \"hapus semua data keuangan saya\" (transaksi + saldo rekening)",
     "- Saldo rekening: \"catat saldo rekening:\\n1) 900000\\n2) 1200000\" lalu \"lihat saldo rekening\"",
     "- Aturan kategori: \"atur aturan merchant indomaret = kategori belanja\"",
     "- Anomali: \"matikan alert anomali\" / \"nyalakan alert anomali\"",
@@ -284,6 +286,31 @@ function toDateRange(
   };
 }
 
+async function getPositionSnapshotBlock(user: UserRow): Promise<string[]> {
+  const estimated = await getEstimatedBalancesFromLatestSnapshot(user.id);
+  if (!estimated) {
+    return ["Posisi saldo berjalan: belum ada snapshot rekening."];
+  }
+  const capturedAt = formatDateInTimezone(estimated.captured_at, user.timezone);
+  const lines = [
+    `Posisi saldo estimasi (${capturedAt} + delta transaksi): ${formatCurrency(estimated.total_estimated, user.currency_code)} (${estimated.accounts.length} rekening)`,
+    `- Snapshot terakhir: ${formatCurrency(estimated.total_snapshot, user.currency_code)}`,
+    `- Delta transaksi setelah snapshot: ${formatSignedCurrency(estimated.total_delta, user.currency_code)}`
+  ];
+
+  if (estimated.unassigned_tx_count > 0) {
+    lines.push(
+      `- Delta belum dipetakan ke rekening: ${formatSignedCurrency(estimated.unassigned_delta, user.currency_code)} (${estimated.unassigned_tx_count} trx tanpa rekening)`
+    );
+  }
+
+  lines.push(
+    "Catatan: snapshot tetap manual, lalu sistem hitung estimasi saldo berjalan dari arus kas transaksi setelah snapshot."
+  );
+
+  return lines;
+}
+
 function parseMonth(
   monthValue: string | null,
   timezone: string,
@@ -298,7 +325,15 @@ function parseMonth(
 }
 
 function formatTransactionLine(transaction: TransactionRow, user: UserRow): string {
-  return `#${transaction.id} | ${formatDateInTimezone(transaction.occurred_at, user.timezone)} | ${typeLabel(transaction.type)} | ${toTitleCase(transaction.category)} | ${formatCurrency(transaction.amount, user.currency_code)} | ${transaction.merchant || "-"}`;
+  return `#${transaction.id} | ${formatDateInTimezone(transaction.occurred_at, user.timezone)} | ${typeLabel(transaction.type)} | ${toTitleCase(transaction.category)} | ${formatCurrency(transaction.amount, user.currency_code)} | ${transaction.merchant || "-"} | Rek: ${transaction.account_label || "-"}`;
+}
+
+function formatSignedCurrency(amount: number, currencyCode: string): string {
+  const absolute = formatCurrency(Math.abs(amount), currencyCode);
+  if (Math.abs(amount) < 0.005) {
+    return formatCurrency(0, currencyCode);
+  }
+  return amount >= 0 ? `+${absolute}` : `-${absolute}`;
 }
 
 function dbCommandHelpText(): string {
@@ -307,8 +342,9 @@ function dbCommandHelpText(): string {
     "1) tampilkan 10 transaksi terakhir",
     "2) hapus transaksi terakhir",
     "3) hapus transaksi id 25",
-    "4) ubah transaksi id 25 jadi 50000 kategori transport",
-    "5) tampilkan transaksi pengeluaran bulan ini",
+    "4) ubah transaksi id 25 jadi 50000 kategori transport rekening BCA",
+    "5) tampilkan transaksi pengeluaran bulan ini rekening BCA",
+    "6) hapus semua data keuangan saya (transaksi + saldo rekening)",
   ].join("\n");
 }
 
@@ -325,6 +361,7 @@ async function buildTodaySummary(user: UserRow): Promise<string> {
     range.startIso,
     range.endIsoExclusive,
   );
+  const positionBlock = await getPositionSnapshotBlock(user);
   const spent = summary.expense + summary.debt;
   const net = summary.income - spent;
 
@@ -335,6 +372,7 @@ async function buildTodaySummary(user: UserRow): Promise<string> {
     `- Utang: ${formatCurrency(summary.debt, user.currency_code)}`,
     `- Saldo bersih: ${formatCurrency(net, user.currency_code)}`,
     `- Jumlah transaksi: ${summary.tx_count}`,
+    ...positionBlock
   ].join("\n");
 }
 
@@ -355,6 +393,7 @@ async function buildRangeSummary(
     range.endIsoExclusive,
     3,
   );
+  const positionBlock = await getPositionSnapshotBlock(user);
   const spent = summary.expense + summary.debt;
   const net = summary.income - spent;
 
@@ -377,6 +416,7 @@ async function buildRangeSummary(
             .join(", ")
         : "Belum ada data pengeluaran"
     }`,
+    ...positionBlock
   ].join("\n");
 }
 
@@ -565,6 +605,7 @@ async function buildFinancialStatus(user: UserRow): Promise<string> {
     toIsoUtc(monthEnd.plus({ milliseconds: 1 })),
     3,
   );
+  const positionBlock = await getPositionSnapshotBlock(user);
 
   const spent = summary.expense + summary.debt;
   const net = summary.income - spent;
@@ -586,6 +627,7 @@ async function buildFinancialStatus(user: UserRow): Promise<string> {
         ? topCategories.map((item) => toTitleCase(item.category)).join(", ")
         : "Belum ada data"
     }`,
+    ...positionBlock
   ].join("\n");
 }
 
@@ -868,6 +910,7 @@ function sanitizeTransactions(list: ParsedTransaction[], sourceMessage: string):
     category: (t.category ?? "lainnya").trim().toLowerCase(),
     amount: t.amount ?? null,
     merchant: t.merchant ?? null,
+    account_label: t.account_label?.trim() || null,
     note: t.note ?? null,
     occurred_at: t.occurred_at ?? null,
     is_remainder: t.is_remainder ?? false
@@ -964,6 +1007,16 @@ async function handleConfirmImport(user: UserRow, ingestId: number): Promise<str
 }
 
 async function applyPending(user: UserRow, pending: PendingRow): Promise<string> {
+  if (pending.action === "delete_all_financial_data") {
+    const result = await deleteAllFinancialData(user.id);
+    await deletePending(pending.id);
+    if (env.AGENT_DEBUG_LOG) {
+      console.log(
+        `pending:execute delete_all_financial_data user=${user.id} tx=${result.transactions} bal=${result.balances} pending=${result.pending}`
+      );
+    }
+    return `Semua data keuangan dihapus: ${result.transactions} transaksi, ${result.balances} saldo rekening, ${result.pending} pending action.`;
+  }
   if (pending.action === "delete_all") {
     const count = await deleteAllTransactions(user.id);
     await deletePending(pending.id);
@@ -1005,6 +1058,7 @@ function buildDbUpdatePayload(parsed: ParsedDbCommand): {
   category?: string;
   amount?: number;
   merchant?: string | null;
+  account_label?: string | null;
   note?: string | null;
   occurred_at?: string;
 } {
@@ -1013,6 +1067,7 @@ function buildDbUpdatePayload(parsed: ParsedDbCommand): {
     category?: string;
     amount?: number;
     merchant?: string | null;
+    account_label?: string | null;
     note?: string | null;
     occurred_at?: string;
   } = {};
@@ -1029,6 +1084,9 @@ function buildDbUpdatePayload(parsed: ParsedDbCommand): {
   if (parsed.update_merchant !== null) {
     payload.merchant = parsed.update_merchant;
   }
+  if (parsed.update_account_label !== null) {
+    payload.account_label = parsed.update_account_label;
+  }
   if (parsed.update_note !== null) {
     payload.note = parsed.update_note;
   }
@@ -1044,6 +1102,7 @@ function hasAnyUpdateField(payload: {
   category?: string;
   amount?: number;
   merchant?: string | null;
+  account_label?: string | null;
   note?: string | null;
   occurred_at?: string;
 }): boolean {
@@ -1052,6 +1111,7 @@ function hasAnyUpdateField(payload: {
     payload.category !== undefined ||
     payload.amount !== undefined ||
     payload.merchant !== undefined ||
+    payload.account_label !== undefined ||
     payload.note !== undefined ||
     payload.occurred_at !== undefined
   );
@@ -1071,6 +1131,7 @@ async function handleDatabaseQuery(
     limit: parsed.limit ?? 10,
     type: parsed.filter_type,
     category: parsed.filter_category,
+    accountLabel: parsed.filter_account_label ?? null,
     startIso: range?.startIso ?? null,
     endIsoExclusive: range?.endIsoExclusive ?? null,
   });
@@ -1109,7 +1170,7 @@ async function handleDatabaseQuery(
                   item.category
                 };amount=${item.amount};merchant=${
                   item.merchant || "-"
-                };date=${DateTime.fromISO(item.occurred_at).toISODate()}`,
+                };account=${item.account_label || "-"};date=${DateTime.fromISO(item.occurred_at).toISODate()}`,
             )
             .join(" || ")
         : "none"
@@ -1154,6 +1215,11 @@ async function handleDatabaseCommand(
     }
     const pending = await createPending(user.id, "delete_by_id", { transaction_id: parsed.transaction_id });
     return `Konfirmasi hapus transaksi #${parsed.transaction_id}? (ya/tidak)\nPending ID: ${pending.id}`;
+  }
+
+  if (parsed.command_type === "delete_all_financial_data") {
+    const pending = await createPending(user.id, "delete_all_financial_data", {});
+    return `Konfirmasi hapus semua data keuangan (transaksi + saldo rekening)? (ya/tidak)\nPending ID: ${pending.id}`;
   }
 
   if (parsed.command_type === "delete_all") {
@@ -1243,16 +1309,29 @@ async function handleChat(user: UserRow, message: string): Promise<string> {
   }
 
   if (/\b(lihat|tampilkan|show|cek)\b.*\b(saldo)\b.*\b(rekening)\b/i.test(message)) {
-    const balances = await getLatestAccountBalances(user.id);
-    if (!balances.length) {
+    const estimated = await getEstimatedBalancesFromLatestSnapshot(user.id);
+    if (!estimated) {
       return "Belum ada data saldo rekening yang tercatat.";
     }
-    const total = balances.reduce((s, b) => s + b.balance, 0);
-    return [
-      "Saldo rekening terakhir:",
-      ...balances.map((b) => `- ${b.account_label}: ${formatCurrency(b.balance, user.currency_code)}`),
-      `Total saldo: ${formatCurrency(total, user.currency_code)}`
-    ].join("\n");
+    const capturedAt = formatDateInTimezone(estimated.captured_at, user.timezone);
+    const lines = [
+      `Saldo rekening estimasi berjalan (snapshot ${capturedAt}):`,
+      ...estimated.accounts.map(
+        (item) =>
+          `- ${item.account_label}: snapshot ${formatCurrency(item.snapshot_balance, user.currency_code)}, delta ${formatSignedCurrency(item.delta_since_snapshot, user.currency_code)}, estimasi ${formatCurrency(item.estimated_balance, user.currency_code)}`
+      ),
+      `Total snapshot: ${formatCurrency(estimated.total_snapshot, user.currency_code)}`,
+      `Total delta transaksi: ${formatSignedCurrency(estimated.total_delta, user.currency_code)}`,
+      `Total estimasi saldo: ${formatCurrency(estimated.total_estimated, user.currency_code)}`
+    ];
+
+    if (estimated.unassigned_tx_count > 0) {
+      lines.push(
+        `Catatan: ada ${estimated.unassigned_tx_count} transaksi tanpa rekening (delta ${formatSignedCurrency(estimated.unassigned_delta, user.currency_code)}), jadi sebaran per rekening bisa belum presisi.`
+      );
+    }
+
+    return lines.join("\n");
   }
 
   const now = DateTime.now().setZone(user.timezone);
@@ -1348,6 +1427,7 @@ export async function processIncomingText(
   const userEmbedding = await getEmbedding(redactedMsg);
   const similar = await getSimilarMessages(user.id, userEmbedding, 8);
   const topCatMerch = await getTopCategoryMerchant(user.id, 10);
+  const estimatedPosition = await getEstimatedBalancesFromLatestSnapshot(user.id);
   const pendingCtx = await getActivePending(user.id);
   const context = [
     `User: ${user.whatsapp_number}`,
@@ -1355,6 +1435,11 @@ export async function processIncomingText(
     `Currency: ${user.currency_code}`,
     `Anomaly alert: ${user.anomaly_opt_in !== false}`,
     `Saldo bulan ini - income: ${summary.income}, expense: ${summary.expense}, debt: ${summary.debt}`,
+    `Posisi saldo estimasi: ${
+      estimatedPosition
+        ? `${estimatedPosition.total_estimated} (snapshot ${estimatedPosition.total_snapshot}, delta ${estimatedPosition.total_delta}, rekening ${estimatedPosition.accounts.length})`
+        : "none"
+    }`,
     `Transaksi terakhir: ${
       recent.length
         ? recent

@@ -7,6 +7,7 @@ export interface ParsedTransaction {
   category: string | null;
   amount: number | null;
   merchant: string | null;
+  account_label?: string | null;
   note: string | null;
   occurred_at: string | null;
   is_remainder?: boolean | null;
@@ -28,6 +29,7 @@ export type DbCommandType =
   | "delete_last_transaction"
   | "delete_by_id"
   | "delete_all"
+  | "delete_all_financial_data"
   | "delete_range"
   | "update_last_transaction"
   | "update_by_id"
@@ -39,12 +41,14 @@ export interface ParsedDbCommand {
   limit: number | null;
   filter_type: TransactionType | null;
   filter_category: string | null;
+  filter_account_label?: string | null;
   start_date: string | null;
   end_date: string | null;
   update_type: TransactionType | null;
   update_category: string | null;
   update_amount: number | null;
   update_merchant: string | null;
+  update_account_label?: string | null;
   update_note: string | null;
   update_occurred_at: string | null;
 }
@@ -89,6 +93,7 @@ export interface TransactionRow {
   category: string;
   amount: number;
   merchant: string | null;
+  account_label?: string | null;
   note: string | null;
   occurred_at: string;
 }
@@ -98,6 +103,24 @@ export interface AccountBalanceRow {
   account_label: string;
   balance: number;
   captured_at: string;
+}
+
+export interface EstimatedAccountBalanceRow {
+  account_label: string;
+  snapshot_balance: number;
+  delta_since_snapshot: number;
+  estimated_balance: number;
+  delta_tx_count: number;
+}
+
+export interface EstimatedBalanceSnapshot {
+  captured_at: string;
+  accounts: EstimatedAccountBalanceRow[];
+  total_snapshot: number;
+  total_delta: number;
+  total_estimated: number;
+  unassigned_delta: number;
+  unassigned_tx_count: number;
 }
 
 export interface SummaryRow {
