@@ -545,9 +545,11 @@ function fallbackDbCommand(message: string, timezone: string): ParsedDbCommand {
   const endDate = rel?.end ?? null;
 
   let commandType: DbCommandType = "query";
-  if (/\b(hapus|delete|remove)\b/.test(normalized)) {
+  if (/\b(hapus|menghapus|dihapus|delete|remove|clear|bersihkan)\b/.test(normalized)) {
     const wantsAll =
-      /\b(hapus semua|delete all|clear all|bersihkan semua|hapus seluruh|wipe all)\b/.test(normalized);
+      /\b(hapus semua|menghapus semua|hapus seluruh|hapus semua data|delete all|clear all|bersihkan semua|wipe all)\b/.test(
+        normalized
+      );
     if (wantsAll) {
       commandType = "delete_all";
     } else if (startDate || endDate) {
@@ -982,7 +984,7 @@ export async function parseDatabaseCommand(
   const result = await requestJson<ParsedDbCommand>(
     `Ekstrak perintah database dari pesan user ke JSON:
 {
-  "command_type":"query|delete_last_transaction|delete_by_id|update_last_transaction|update_by_id|unknown",
+  "command_type":"query|delete_last_transaction|delete_by_id|delete_all|delete_range|update_last_transaction|update_by_id|unknown",
   "transaction_id":number|null,
   "limit":number|null,
   "filter_type":"expense|income|debt|null",
@@ -997,6 +999,8 @@ export async function parseDatabaseCommand(
   "update_occurred_at":"ISO-8601|null"
 }
 Aturan:
+- jika user minta hapus semua transaksi/data => delete_all
+- jika user minta hapus berdasarkan rentang waktu/tanggal => delete_range
 - jika user minta hapus transaksi terakhir => delete_last_transaction
 - jika user minta hapus berdasar id => delete_by_id
 - jika user minta ubah/edit transaksi terakhir => update_last_transaction
