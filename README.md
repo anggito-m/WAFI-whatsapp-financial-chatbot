@@ -1,47 +1,73 @@
-# Personal Finance Bot (Telegram First)
+# WAFI — WhatsApp/Telegram AI Financial Chatbot
 
-Track personal finances from chat using natural language and AI.  
-Current ready channel: Telegram (`/api/telegram`).  
-WhatsApp endpoint still exists (`/api/whatsapp`) for later activation.
+**WAFI** (WhatsApp Financial) is a conversational personal finance tracker powered by AI. It lets you log income, expenses, and debts using plain natural-language messages — no forms, no apps to open. Just send a chat message, and WAFI understands, categorizes, stores, and reports your financial activity.
+
+> **Active channel:** Telegram (`/api/telegram`)  
+> **Planned channel:** WhatsApp (`/api/whatsapp`, endpoint ready for future activation)
+
+---
+
+## What Is This Project?
+
+WAFI is a Next.js application deployed as a webhook-based chatbot. When you send a message to the bot on Telegram (e.g. _"paid 45,000 for petrol at Shell"_ or _"received salary 5,000,000 from the office"_), the following happens:
+
+1. **AI parsing** — A Groq-hosted LLM (Llama 4 Maverick) classifies the message intent and extracts structured transaction data (amount, type, category, merchant, date).
+2. **Rule engine** — Regex/merchant-based rules auto-assign categories and learn from user corrections over time.
+3. **Anomaly detection** — Transactions are checked against a 60-day median+MAD baseline; unusual amounts trigger an alert.
+4. **Persistence** — Transactions, rules, and user context are stored in PostgreSQL (Aiven-compatible).
+5. **Reporting & visualization** — Ask for a summary, and WAFI queries the database and returns a human-readable report or an AI-generated chart image (pie, bar, time-series).
+6. **Semantic memory** — Conversation embeddings enable context-aware follow-up answers based on your own financial history.
+
+All data is isolated per chat user ID — no data is shared between users.
+
+---
 
 ## Stack
-- Next.js (Vercel-ready API routes)
-- TypeScript
-- PostgreSQL (`pg`, Aiven-compatible)
-- Groq API (Llama 4 Maverick)
+- **Next.js** (Vercel-ready API routes)
+- **TypeScript**
+- **PostgreSQL** (`pg`, Aiven-compatible) with `pgvector` for semantic memory
+- **Groq API** (Llama 4 Maverick) — LLM for intent parsing, classification, and chat
+- **Tesseract.js** — OCR for receipt/invoice photo imports (English + Indonesian)
+- **PapaParse** — CSV import with preview and confirmation flow
+- **Luxon** — timezone-aware date handling
 
 ## Features
-- Natural-language transaction logging
-- Intent routing:
-  - `report`
-  - `transaction`
-  - `db_command`
-  - `chat`
+- Natural-language transaction logging (income / expense / debt)
+- AI agent with tool-calling for intent routing:
+  - `log_transactions` — record one or more transactions
+  - `query_report` — generate reports and charts
+  - `db_command` — list, filter, update, or delete transactions from chat
+  - `rule_command` — manage auto-categorization rules and anomaly alert toggles
+  - `import_summary` / `confirm_import` — guided file import flow
+  - `apply_pending_action` — confirmation flows (e.g. bulk deletes)
+  - `send_reply` / `fallback_error` — direct text responses
 - Reply style:
   - Natural Indonesian (interactive, human-like)
-  - Context-aware explanations from your own data
+  - Context-aware explanations drawn from the user's own data
 - Database commands from chat:
-  - list/filter transactions
-  - delete latest or delete by id
-  - update latest or update by id
+  - List/filter transactions
+  - Delete latest or delete by ID
+  - Update latest or update by ID
+  - Delete all financial data
 - Reports:
-  - today summary
-  - weekly/monthly date range summary
-  - category spend
-  - month-vs-month comparison
-  - financial status
-- Visualizations on demand:
-  - pie chart pendapatan vs pengeluaran
-  - time-series pendapatan & pengeluaran harian
-  - bar chart pengeluaran per kategori
-  - bar chart pendapatan per kategori
-  - chart config dibuat dari kode JavaScript yang digenerate AI, lalu dieksekusi di sandbox aman
-- Rule engine: auto kategori/tipe berdasar aturan regex/merchant + belajar dari koreksi user
-- Anomali & duplikat detector (median+MAD 60 hari) dengan alert serta digest harian
-- Impor bukti transaksi:
-  - Foto/nota via OCR (tesseract.js, eng+ind)
-  - CSV sampai 500 baris, dengan pratinjau & konfirmasi
-- Data isolation per chat user id
+  - Today's summary
+  - Weekly/monthly date-range summary
+  - Category spend breakdown
+  - Month-vs-month comparison
+  - Overall financial status
+- On-demand visualizations (AI generates JavaScript chart configs, executed in a safe sandbox):
+  - Pie chart: income vs expenses
+  - Time-series: daily income & expenses
+  - Bar chart: expenses per category
+  - Bar chart: income per category
+- Rule engine: auto-categorize by regex pattern or merchant name; learns from user corrections
+- Anomaly & duplicate detector (median + MAD over 60 days) with real-time alerts and daily digests
+- Import transaction evidence:
+  - Receipt photos via OCR (Tesseract.js, English + Indonesian)
+  - CSV files up to 500 rows, with preview and confirmation step
+- Semantic memory via vector embeddings for context-aware conversation
+- Account balance snapshots per labeled account
+- Per-user data isolation by chat user ID
 
 ## Project Structure
 - `app/api/telegram/route.ts`: Telegram webhook endpoint
